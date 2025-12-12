@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-slate-900 text-slate-100;
+}
+
+.newsletter-container {
+  @apply rounded-lg border border-slate-700 bg-slate-800/50 p-8;
+}
+
+.loading-spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Styles for rendered HTML content */
+.html-content {
+  @apply text-slate-100;
+}
+
+.html-content h1 {
+  @apply text-3xl font-bold mt-6 mb-4 text-white;
+}
+
+.html-content h2 {
+  @apply text-2xl font-bold mt-5 mb-3 text-white;
+}
+
+.html-content h3 {
+  @apply text-xl font-bold mt-4 mb-2 text-white;
+}
+
+.html-content p {
+  @apply mb-4 leading-relaxed;
+}
+
+.html-content ul,
+.html-content ol {
+  @apply ml-6 mb-4;
+}
+
+.html-content li {
+  @apply mb-2;
+}
+
+.html-content a {
+  @apply text-purple-400 underline hover:text-purple-300 transition-colors;
+}
+
+.html-content blockquote {
+  @apply border-l-4 border-purple-600 pl-4 mb-4 italic text-slate-300;
+}
+
+.html-content code {
+  @apply bg-slate-900 border border-slate-600 rounded px-2 py-1 font-mono text-sm;
+}
+
+.html-content pre {
+  @apply bg-slate-900 border border-slate-600 rounded p-4 overflow-x-auto mb-4;
+}
+
+.html-content table {
+  @apply w-full border-collapse mb-4;
+}
+
+.html-content th,
+.html-content td {
+  @apply border border-slate-600 px-3 py-2 text-left;
+}
+
+.html-content th {
+  @apply bg-slate-800 font-bold;
+}

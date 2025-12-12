@@ -13,116 +13,141 @@ from urllib.parse import urlparse
 
 import feedparser
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Liste de flux RSS/Atom issus du document de spécification (~100 sources)
 FEED_URLS: List[str] = [
-    # A. High-value independent research & journalism
     "https://krebsonsecurity.com/feed/",
     "https://thehackernews.com/feeds/posts/default?alt=rss",
-    "https://www.bleepingcomputer.com/rss/",
-    "https://arstechnica.com/feed/",
-    "https://www.wired.com/feed/category/security/latest/rss",
-    "https://www.darkreading.com/rss.xml",
-    "https://www.theregister.com/headlines.atom",
     "https://threatpost.com/feed/",
-    "https://www.vice.com/en/topic/cybersecurity/rss",
-    "https://techcrunch.com/tag/security/feed/",
-    "https://www.schneier.com/blog/atom.xml",
-    "https://netlas.io/blog/rss.xml",
-    "https://podcast.darknetdiaries.com/rss",
+    # "https://www.theregister.com/headlines.atom",
+    # "https://www.vice.com/en/topic/cybersecurity/rss",
+    # "https://techcrunch.com/tag/security/feed/",
+    # "https://www.schneier.com/blog/atom.xml",
+    # "https://unit42.paloaltonetworks.com/feed/",
+    # "https://news.sophos.com/en-us/feed/",
+#    "https://www.crowdstrike.com/blog/feed/",
+#    "https://research.checkpoint.com/feed/",
+#    "https://www.bitdefender.com/blog/api/rss/labs/",
+#    "https://blogs.vmware.com/security/feed/",
+#    "https://www.cisa.gov/uscert/ncas/alerts.xml",
+#    "https://blog.malwarebytes.com/feed/",
+#    "https://www.greynoise.io/blog/rss.xml",
+#    "https://export.arxiv.org/rss/cs.CR",
+#    "https://export.arxiv.org/rss/cs.CC",
+#    "https://blog.virustotal.com/atom.xml",
 
-    # B. Vendor & commercial research blogs
-    "https://blog.talosintelligence.com/atom.xml",
-    "https://unit42.paloaltonetworks.com/feed/",
-    "https://www.crowdstrike.com/blog/feed/",
-    "https://www.mandiant.com/resources/rss.xml",
-    "https://www.microsoft.com/security/blog/feed/",
-    "https://cloud.google.com/blog/topics/security/rss.xml",
-    "https://www.trendmicro.com/vinfo/us/security/news.rss",
-    "https://news.sophos.com/en-us/feed/",
-    "https://research.checkpoint.com/feed/",
-    "https://www.bitdefender.com/blog/api/rss/labs/",
-    "https://www.kaspersky.com/blog/rss.xml",
-    "https://www.fortinet.com/blog.rss",
-    "https://www.akamai.com/blog/security/rss.xml",
-    "https://www.rapid7.com/blog/rss.xml",
-    "https://blogs.vmware.com/security/feed/",
-    "https://www.splunk.com/en_us/blog/security.html?format=rss",
-    "https://www.f5.com/services/resources/rss.xml",
-    "https://nakedsecurity.sophos.com/feed/",
-    "https://www.elastic.co/blog/tag/security?format=rss",
 
-    # C. CERTs / Government / Standards
-    "https://www.cisa.gov/uscert/ncas/alerts.xml",
-    "https://www.ncsc.gov.uk/rss.xml",
-    "https://www.enisa.europa.eu/feed/",
-    "https://www.ssi.gouv.fr/feed/",
-    "https://csrc.nist.gov/feeds/news.xml",
-    "https://cert.europa.eu/rss",
-    "https://www.cyber.gov.au/news-and-events/rss-feeds",
-    "https://cyber.gc.ca/en/rss",
-    "https://www.cert.govt.nz/rss",
 
-    # D. Threat-intel and feeds (IoCs)
-    "https://abuse.ch/feeds/",
-    "https://otx.alienvault.com/feeds/",
-    "https://www.team-cymru.org/Resources/",
-    "https://blog.virustotal.com/atom.xml",
-    "https://www.shadowserver.org/feed/",
-    "https://urlhaus.abuse.ch/downloads/rss/",
-    "https://rules.emergingthreats.net/rss",
-    "https://blog.malwarebytes.com/feed/",
-    "https://isc.sans.edu/rssfeed.xml",
-    "https://umbrella.cisco.com/blog/rss.xml",
-    "https://www.greynoise.io/blog/rss.xml",
 
-    # E. Academic / standards / crypto research
-    "https://eprint.iacr.org/rss/",
-    "https://export.arxiv.org/rss/cs.CR",
-    "https://export.arxiv.org/rss/cs.CC",
-    "https://cryptomator.org/blog/feed/",
-    "https://research.google/blog/rss/",
+    # A. High-value independent research & journalism
+    # "https://krebsonsecurity.com/feed/",
+    # "https://thehackernews.com/feeds/posts/default?alt=rss",
+    # "https://www.bleepingcomputer.com/rss/",
+    # "https://arstechnica.com/feed/",
+    # "https://www.wired.com/feed/category/security/latest/rss",
+    # "https://www.darkreading.com/rss.xml",
+    # "https://www.theregister.com/headlines.atom",
+    # "https://threatpost.com/feed/",
+    # "https://www.vice.com/en/topic/cybersecurity/rss",
+    # "https://techcrunch.com/tag/security/feed/",
+    # "https://www.schneier.com/blog/atom.xml",
+    # "https://netlas.io/blog/rss.xml",
+    # "https://podcast.darknetdiaries.com/rss",
 
-    # F. AI security / model safety / alignment
-    "https://openai.com/blog/rss/",
-    "https://www.anthropic.com/index.rss",
-    "https://www.centerforaisafety.org/rss",
-    "https://www.alignmentforum.org/feeds.rss",
-    "https://deepmind.com/blog/rss.xml",
-    "https://huggingface.co/blog/rss.xml",
+    # # B. Vendor & commercial research blogs
+    # "https://blog.talosintelligence.com/atom.xml",
+    # "https://unit42.paloaltonetworks.com/feed/",
+    # "https://www.crowdstrike.com/blog/feed/",
+    # "https://www.mandiant.com/resources/rss.xml",
+    # "https://www.microsoft.com/security/blog/feed/",
+    # "https://cloud.google.com/blog/topics/security/rss.xml",
+    # "https://www.trendmicro.com/vinfo/us/security/news.rss",
+    # "https://news.sophos.com/en-us/feed/",
+    # "https://research.checkpoint.com/feed/",
+    # "https://www.bitdefender.com/blog/api/rss/labs/",
+    # "https://www.kaspersky.com/blog/rss.xml",
+    # "https://www.fortinet.com/blog.rss",
+    # "https://www.akamai.com/blog/security/rss.xml",
+    # "https://www.rapid7.com/blog/rss.xml",
+    # "https://blogs.vmware.com/security/feed/",
+    # "https://www.splunk.com/en_us/blog/security.html?format=rss",
+    # "https://www.f5.com/services/resources/rss.xml",
+    # "https://nakedsecurity.sophos.com/feed/",
+    # "https://www.elastic.co/blog/tag/security?format=rss",
 
-    # G. Cryptography & engineering blogs
-    "https://blog.cloudflare.com/tag/security/rss/",
-    "https://letsencrypt.org/feed/",
-    "https://www.eff.org/rss/",
-    "https://aws.amazon.com/blogs/security/feed/",
+    # # C. CERTs / Government / Standards
+    # "https://www.cisa.gov/uscert/ncas/alerts.xml",
+    # "https://www.ncsc.gov.uk/rss.xml",
+    # "https://www.enisa.europa.eu/feed/",
+    # "https://www.ssi.gouv.fr/feed/",
+    # "https://csrc.nist.gov/feeds/news.xml",
+    # "https://cert.europa.eu/rss",
+    # "https://www.cyber.gov.au/news-and-events/rss-feeds",
+    # "https://cyber.gc.ca/en/rss",
+    # "https://www.cert.govt.nz/rss",
 
-    # H. Newsletters, aggregators & topic collections
-    "https://rss.feedspot.com/ai_rss_feeds/",
-    "https://rss.feedspot.com/cyber_security_rss_feeds/",
-    "https://hnrss.org/frontpage",
-    "https://www.reddit.com/r/cybersecurity/.rss",
-    "https://security.stackexchange.com/feeds",
-    "https://medium.com/feed/tag/cybersecurity",
+    # # D. Threat-intel and feeds (IoCs)
+    # "https://abuse.ch/feeds/",
+    # "https://otx.alienvault.com/feeds/",
+    # "https://www.team-cymru.org/Resources/",
+    # "https://blog.virustotal.com/atom.xml",
+    # "https://www.shadowserver.org/feed/",
+    # "https://urlhaus.abuse.ch/downloads/rss/",
+    # "https://rules.emergingthreats.net/rss",
+    # "https://blog.malwarebytes.com/feed/",
+    # "https://isc.sans.edu/rssfeed.xml",
+    # "https://umbrella.cisco.com/blog/rss.xml",
+    # "https://www.greynoise.io/blog/rss.xml",
 
-    # I. Regional / specialized security sources
-    "https://www.zdnet.com/topic/security/rss.xml",
-    "https://www.securityweek.com/rss.xml",
-    "https://www.csoonline.com/index.rss",
-    "https://portswigger.net/daily-swig/rss.xml",
-    "https://www.bankinfosecurity.com/rss",
+    # # E. Academic / standards / crypto research
+    # "https://eprint.iacr.org/rss/",
+    # "https://export.arxiv.org/rss/cs.CR",
+    # "https://export.arxiv.org/rss/cs.CC",
+    # "https://cryptomator.org/blog/feed/",
+    # "https://research.google/blog/rss/",
 
-    # J. Podcasts, interviews & long-form
-    "https://risky.biz/feed/",
-    "https://www.recordedfuture.com/blog/rss.xml",
-    "https://www.smashingsecurity.com/rss",
-    "https://www.thecyberwire.com/rss/news.xml",
+    # # F. AI security / model safety / alignment
+    # "https://openai.com/blog/rss/",
+    # "https://www.anthropic.com/index.rss",
+    # "https://www.centerforaisafety.org/rss",
+    # "https://www.alignmentforum.org/feeds.rss",
+    # "https://deepmind.com/blog/rss.xml",
+    # "https://huggingface.co/blog/rss.xml",
 
-    # K. Misc / GitHub curated / others
-    "https://security.stackexchange.com/feeds/tag?tagnames=cve",
-    "https://github.blog/changelog/",
-    "https://snyk.io/blog/rss.xml",
-    "https://owasp.org/feed.xml",
+    # # G. Cryptography & engineering blogs
+    # "https://blog.cloudflare.com/tag/security/rss/",
+    # "https://letsencrypt.org/feed/",
+    # "https://www.eff.org/rss/",
+    # "https://aws.amazon.com/blogs/security/feed/",
+
+    # # H. Newsletters, aggregators & topic collections
+    # "https://rss.feedspot.com/ai_rss_feeds/",
+    # "https://rss.feedspot.com/cyber_security_rss_feeds/",
+    # "https://hnrss.org/frontpage",
+    # "https://www.reddit.com/r/cybersecurity/.rss",
+    # "https://security.stackexchange.com/feeds",
+    # "https://medium.com/feed/tag/cybersecurity",
+
+    # # I. Regional / specialized security sources
+    # "https://www.zdnet.com/topic/security/rss.xml",
+    # "https://www.securityweek.com/rss.xml",
+    # "https://www.csoonline.com/index.rss",
+    # "https://portswigger.net/daily-swig/rss.xml",
+    # "https://www.bankinfosecurity.com/rss",
+
+    # # J. Podcasts, interviews & long-form
+    # "https://risky.biz/feed/",
+    # "https://www.recordedfuture.com/blog/rss.xml",
+    # "https://www.smashingsecurity.com/rss",
+    # "https://www.thecyberwire.com/rss/news.xml",
+
+    # # K. Misc / GitHub curated / others
+    # "https://security.stackexchange.com/feeds/tag?tagnames=cve",
+    # "https://github.blog/changelog/",
+    # "https://snyk.io/blog/rss.xml",
+    # "https://owasp.org/feed.xml",
 ]
 
 # Certains sites ont un flux avec contenu suffisant (on n'a pas besoin de re-télécharger la page)
@@ -138,8 +163,8 @@ RSS_ONLY_DOMAINS = {
 
 def scrape_sources(
     max_items_per_feed: int = 1,
-    feed_timeout: int = 10,
-    page_timeout: int = 10,
+    feed_timeout: int = 15,
+    page_timeout: int = 15,
 ) -> List[Dict[str, Any]]:
     """Scraper tous les flux et retourner une liste d'articles bruts.
 
@@ -200,8 +225,10 @@ def _fetch_rss_feed(feed_url: str, limit: int, timeout: int) -> List[Dict[str, A
         )
     }
 
+    # Use a session with retries to improve robustness against transient network issues
+    session = _get_requests_session()
     try:
-        resp = requests.get(feed_url, headers=headers, timeout=timeout)
+        resp = session.get(feed_url, headers=headers, timeout=timeout)
         resp.raise_for_status()
     except requests.RequestException as exc:
         print(f"  !! Impossible de lire le flux {feed_url} : {exc}")
@@ -229,9 +256,29 @@ def _fetch_web_page(url: str, timeout: int) -> str:
             "Chrome/110.0 Safari/537.36"
         )
     }
-    resp = requests.get(url, headers=headers, timeout=timeout)
+    session = _get_requests_session()
+    resp = session.get(url, headers=headers, timeout=timeout)
     resp.raise_for_status()
     return resp.text
+
+
+def _get_requests_session() -> requests.Session:
+    """Return a requests.Session configured with a Retry policy.
+
+    This helps mitigate transient network errors and timeouts when scraping
+    many external feeds.
+    """
+    session = requests.Session()
+    retries = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=("GET", "POST"),
+    )
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
 
 
 def _parse_date(date_str: Optional[str]) -> Optional[str]:

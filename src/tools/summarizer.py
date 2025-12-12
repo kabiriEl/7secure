@@ -1,123 +1,266 @@
-"""Summarization tool: regroupe les articles en lots et résume chaque lot via le LLM.
+"""
+Summarizer tool using Google Gemini Flash 2.0 API.
 
-Le LLM doit retourner un JSON contenant une liste d'objets avec les champs
-title, url et summary. Cette approche réduit fortement le nombre d'appels
-réseau quand la source de données est large.
+This module calls the Google Generative AI API to produce concise summaries.
+Ollama integration is commented out for future use.
 """
 
-from typing import Any, Dict, List
+from typing import List
+import requests
 import json
+import os
 
-from src.tools.rag_llm import get_llm
+from src.configs.config import settings
+
+# ===== GEMINI CONFIGURATION (ACTIVE) =====
+GEMINI_API_KEY = settings.GEMINI_API_KEY
+GEMINI_MODEL = settings.GEMINI_MODEL
+GEMINI_API_URL = f"{settings.GEMINI_API_URL}/{GEMINI_MODEL}:generateContent"
+
+# ===== OLLAMA CONFIGURATION (COMMENTED - FOR FUTURE USE) =====
+# OLLAMA_CHAT = "http://localhost:11434/api/chat"
+# MODEL_NAME = "phi3:mini"
 
 
-def _chunk(iterable: List[Any], size: int) -> List[List[Any]]:
-    return [iterable[i: i + size] for i in range(0, len(iterable), size)]
+class Summarizer:
+    """Simple wrapper to call Gemini API and return a short summary string."""
+
+    def __init__(self) -> None:
+        if not GEMINI_API_KEY:
+            raise ValueError("GEMINI_API_KEY not set in environment variables")
+
+    def summarize(self, text: str, max_tokens: int = 200) -> str:
+        """Return a short summary for `text` using Google Gemini Flash API.
+
+        Falls back to raw text if API call fails.
+        """
+        # Safety limits to avoid very large payloads
+        max_input_chars = 4000
+        safe_text = text if len(text) <= max_input_chars else text[:max_input_chars]
+
+        prompt = (
+            "Resume le texte ci-dessous en cinq phrases maximum. "
+            "Mets en evidence le contexte, les acteurs, l'attaque ou l'actualite, "
+            "les victimes et l'impact. Ne rajoute pas d'information qui n'est pas dans le texte.\n\n"
+            f"Texte :\n{safe_text}\n\nResumé :"
+        )
+
+        try:
+            # Call Gemini API
+            payload = {
+                "contents": [
+                    {
+                        "parts": [
+                            {"text": prompt}
+                        ]
+                    }
+                ],
+                "generationConfig": {
+                    "maxOutputTokens": max_tokens,
+                    "temperature": 0.2,
+                },
+            }
+
+            headers = {
+                "Content-Type": "application/json",
+            }
+
+            response = requests.post(
+                f"{GEMINI_API_URL}?key={GEMINI_API_KEY}",
+                json=payload,
+                headers=headers,
+                timeout=30
+            )
+            response.raise_for_status()
+
+            data = response.json()
+            print(f"[SUMMARIZER] Gemini response received")
+
+            # Extract text from Gemini response
+            if "candidates" in data and len(data["candidates"]) > 0:
+                candidate = data["candidates"][0]
+                if "content" in candidate:
+                    parts = candidate["content"].get("parts", [])
+                    if parts and "text" in parts[0]:
+                        result = parts[0]["text"].strip()
+                        print(f"[SUMMARIZER] Summary generated successfully: {result[:100]}...")
+                        return result
+
+            print("[SUMMARIZER] No valid response from Gemini")
+            return "Summary unavailable"
+
+        except requests.RequestException as exc:
+            print(f"[SUMMARIZER] Gemini API request failed: {exc}")
+            print(f"[SUMMARIZER] Falling back to raw text truncation")
+            # Fallback: return truncated original text
+            return safe_text[:500]
+        except (KeyError, IndexError, ValueError) as exc:
+            print(f"[SUMMARIZER] Error parsing Gemini response: {exc}")
+            return safe_text[:500]
 
 
-def summarize_articles(articles: List[Dict[str, Any]], max_sentences: int = 3, batch_size: int = 20) -> List[Dict[str, Any]]:
-    """Produit un résumé pour chaque article en traitant les articles par lots.
+def summarize_articles(articles: list) -> list:
+    """Compatibility wrapper used by the pipeline.
 
-    - batch_size : nombre d'articles par appel LLM (éviter appels unitaires)
-    - max_sentences : longueur approximative des résumés
-
-    Retourne une liste d'articles au même format que `clean_articles` mais avec
-    `content` contenant le résumé.
+    Accepts the list of clean article dicts and returns a list of dicts
+    with the same shape but with the 'content' replaced by the summary text.
     """
-    if not articles:
-        print("[SUMMARIZER] Aucun article à résumer.")
-        return []
+    summarizer = Summarizer()
+    summaries = []
+    for art in articles:
+        title = art.get("title") or art.get("headline") or ""
+        url = art.get("url") or art.get("link") or ""
+        published = art.get("published")
+        content = art.get("content") or art.get("text") or ""
 
-    llm = get_llm()
-    summaries: List[Dict[str, Any]] = []
-
-    batches = _chunk(articles, batch_size)
-    for b_index, batch in enumerate(batches):
-        # Construire prompt unique contenant plusieurs articles
-        prompt_parts = [
-            "Tu es un assistant qui résume des articles de cybersécurité.",
-            "Pour chaque article fourni, fournis un petit résumé en respectant les consignes :",
-            f"- Résumé concis en {max_sentences} phrases maximum par article.",
-            "- Met en avant incidents, vulnérabilités et tendances importantes.",
-            "- N'invente pas d'informations.",
-            "- Réponds en français si le texte source est en français.",
-            "La sortie DOIT être un JSON valide : une liste d'objets {\"title\", \"url\", \"summary\"}.",
-            "Début des articles:\n",
-        ]
-
-        for idx, art in enumerate(batch):
-            title = art.get("title", "")
-            url = art.get("url", "")
-            content = art.get("content", "")
-            prompt_parts.append(f"---ARTICLE-{idx+1}---")
-            prompt_parts.append(f"TITLE: {title}")
-            prompt_parts.append(f"URL: {url}")
-            # Limiter la longueur insérée pour éviter prompts trop grands
-            snippet = content[:8000]
-            prompt_parts.append(f"CONTENT: {snippet}")
-
-        prompt = "\n".join(prompt_parts)
-
-        try:
-            raw = llm.invoke(prompt)
-        except Exception as e:
-            print(f"[SUMMARIZER] Erreur LLM pour le batch {b_index+1}/{len(batches)}: {e}")
-            # fallback : copier les contenus originaux en guise de résumé
-            for art in batch:
-                summaries.append({
-                    "title": art.get("title", ""),
-                    "url": art.get("url", ""),
-                    "published": art.get("published"),
-                    "content": art.get("content", ""),
-                })
+        if not content:
+            summaries.append({"title": title, "url": url, "published": published, "content": ""})
             continue
 
-        # Tenter de parser le JSON renvoyé
-        parsed = None
         try:
-            parsed = json.loads(raw)
-        except Exception:
-            # Si ce n'est pas un JSON strict, essayer d'extraire la première occurrence JSON
-            try:
-                start = raw.find("[")
-                end = raw.rfind("]")
-                if start != -1 and end != -1 and end > start:
-                    parsed = json.loads(raw[start: end + 1])
-            except Exception:
-                parsed = None
+            summary = summarizer.summarize(content, max_tokens=200)
+        except Exception as err:
+            print(f"[SUMMARIZER] summarization failed for {url or title}: {err}")
+            summary = content[:300]
 
-        if not parsed or not isinstance(parsed, list):
-            print(f"[SUMMARIZER] Réponse LLM non-JSON pour batch {b_index+1}, utilisation du fallback")
-            for art in batch:
-                summaries.append({
-                    "title": art.get("title", ""),
-                    "url": art.get("url", ""),
-                    "published": art.get("published"),
-                    "content": art.get("content", ""),
-                })
-            continue
+        summaries.append({"title": title, "url": url, "published": published, "content": summary})
 
-        # Mapper les résumés retournés sur les articles du batch (par ordre)
-        for i, item in enumerate(parsed):
-            try:
-                title = item.get("title") or batch[i].get("title", "")
-                url = item.get("url") or batch[i].get("url", "")
-                summary_text = item.get("summary") or item.get("content") or ""
-            except Exception:
-                # Défaut si la taille ne correspond pas
-                art = batch[i] if i < len(batch) else {}
-                title = art.get("title", "")
-                url = art.get("url", "")
-                summary_text = art.get("content", "")
-
-            summaries.append({
-                "title": title,
-                "url": url,
-                "published": batch[i].get("published"),
-                "content": summary_text,
-            })
-
-        print(f"[SUMMARIZER] Batch {b_index+1}/{len(batches)} traité, {len(parsed)} résumés reçus")
-
-    print(f"[SUMMARIZER] Total résumés: {len(summaries)}")
     return summaries
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# """Summarization tool using HuggingFace InferenceClient and google/gemma-2b-it.
+
+# This module exposes summarize_articles(articles) which returns the same
+# structure as clean_articles but with the `content` field replaced by a
+# concise summary generated by the remote model.
+
+# The implementation keeps things simple: it calls the remote model per-article
+# with a truncated snippet to limit token usage. If the remote call fails we
+# fall back to a short extractive snippet.
+# """
+
+# from typing import Any, Dict, List
+# import requests
+# import json
+
+
+# OLLAMA_API = "http://localhost:11434/api/chat"
+# OLLAMA_MODEL = "llama3"  # Ollama model name for Llama 3; adjust if different locally
+
+
+# def _call_ollama(prompt: str, model: str = OLLAMA_MODEL, timeout: int = 200) -> str:
+#     """Call local Ollama chat API and return the text content.
+
+#     Expects Ollama running locally (default port 11434).
+#     """
+#     payload = {
+#         "model": model,
+#         "messages": [
+#             {"role": "system", "content": "You are a helpful assistant for summarization."},
+#             {"role": "user", "content": prompt},
+#         ],
+#     }
+#     try:
+#         resp = requests.post(OLLAMA_API, json=payload, timeout=timeout)
+#         resp.raise_for_status()
+#         text = resp.text
+
+#         # Try normal JSON parsing first
+#         data = None
+#         try:
+#             data = resp.json()
+#         except Exception:
+#             # If direct JSON parsing fails, try to extract a JSON object/array substring
+#             try:
+#                 import re
+            
+#                 m = re.search(r"\{.*\}", text, flags=re.S)
+#                 if m:
+#                     data = json.loads(m.group(0))
+#                 else:
+#                     m = re.search(r"\[.*\]", text, flags=re.S)
+#                     if m:
+#                         data = json.loads(m.group(0))
+#             except Exception:
+#                 data = None
+
+#         if isinstance(data, dict):
+#             choices = data.get("choices") or []
+#             if choices:
+#                 message = choices[0].get("message") or {}
+#                 if isinstance(message, dict):
+#                     return message.get("content", "").strip()
+#             return data.get("text", "").strip()
+
+#         # Fallback: return raw text (useful when Ollama returns plain text)
+#         return text.strip()
+#     except Exception as e:
+#         # Print a short slice of the response if available to aid debugging
+#         try:
+#             snippet = resp.text[:1000]
+#             print(f"[SUMMARIZER][OLLAMA] Error calling Ollama: {e} -- response snippet:\n{snippet}")
+#         except Exception:
+#             print(f"[SUMMARIZER][OLLAMA] Error calling Ollama: {e}")
+#         raise
+
+
+# def summarize_articles(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+#     """Summarize each article using Ollama Llama 3.
+
+#     Truncates content to 2000 chars before sending to Ollama. On failure, falls
+#     back to a short extractive snippet.
+#     """
+#     if not articles:
+#         print("[SUMMARIZER] Aucun article à résumer.")
+#         return []
+
+#     summaries: List[Dict[str, Any]] = []
+
+#     for i, art in enumerate(articles):
+#         title = art.get("title", "")
+#         url = art.get("url", "")
+#         published = art.get("published")
+#         content = art.get("content", "") or ""
+
+#         if not content:
+#             summaries.append({"title": title, "url": url, "published": published, "content": ""})
+#             print(f"[SUMMARIZER] Article {i+1}/{len(articles)}: {title!r} (pas de contenu)")
+#             continue
+
+#         snippet = content[:2000]
+#         prompt = (
+#             "Summarize the following cybersecurity article concisely (2-3 sentences).\n\n"
+#             f"Title: {title}\nURL: {url}\n\nContent:\n{snippet}\n\n"
+#             "Return only the summary text. Do not add information not present in the text."
+#         )
+
+#         try:
+#             summary = _call_ollama(prompt)
+#         except Exception:
+#             summary = content[:300]
+
+#         summaries.append({"title": title, "url": url, "published": published, "content": summary})
+#         print(f"[SUMMARIZER] Article {i+1}/{len(articles)} résumé: {title!r}")
+
+#     print(f"[SUMMARIZER] Total résumés: {len(summaries)}")
+#     return summaries

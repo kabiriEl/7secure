@@ -36,5 +36,10 @@ class Settings:
     # Répertoire de persistance du vector store (Chroma)
     VECTORSTORE_DIR: str = os.getenv("VECTORSTORE_DIR", "data/chroma_store")
 
+    # Google Gemini API Configuration
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    GEMINI_API_URL: str = "https://generativelanguage.googleapis.com/v1beta/models"
+
 
 settings = Settings()

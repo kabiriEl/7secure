@@ -16,8 +16,9 @@ from src.tools.scraper import scrape_sources
 from src.tools.preprocess import preprocess_articles
 from src.tools.embedding import upsert_embeddings
 from src.tools.rag import answer_with_rag
-from src.tools.newsletter import build_newsletter_from_rag
 from src.tools.summarizer import summarize_articles
+from src.tools.html_generator import generate_newsletter_html
+from src.tools.filtering import filter_articles
 
 
 class PipelineState(TypedDict, total=False):
@@ -36,8 +37,16 @@ def scrape_node(state: PipelineState) -> PipelineState:
     return {**state, "raw_articles": raw}
 
 
+def filter_node(state: PipelineState) -> PipelineState:
+    raw = state.get("raw_articles", [])
+    filtered = filter_articles(raw)
+    return {**state, "filtered_articles": filtered}
+
+
 def preprocess_node(state: PipelineState) -> PipelineState:
-    clean = preprocess_articles(state.get("raw_articles", []))
+    # Use filtered_articles if available, otherwise fall back to raw_articles
+    articles_to_process = state.get("filtered_articles", state.get("raw_articles", []))
+    clean = preprocess_articles(articles_to_process)
     return {**state, "clean_articles": clean}
 
 
@@ -63,10 +72,10 @@ def rag_node(state: PipelineState) -> PipelineState:
     return {**state, "rag_answer": answer}
 
 
-def newsletter_node(state: PipelineState) -> PipelineState:
+def html_node(state: PipelineState) -> PipelineState:
     rag_answer = state.get("rag_answer", "")
-    newsletter = build_newsletter_from_rag(rag_answer)
-    return {**state, "newsletter": newsletter}
+    html_output = generate_newsletter_html(rag_answer)
+    return {**state, "newsletter_html": html_output}
 
 
 # --- Construction de l'app LangGraph ----------------------------------------
@@ -76,19 +85,22 @@ def build_pipeline_app():
     workflow = StateGraph(PipelineState)
 
     workflow.add_node("scrape", scrape_node)
+    workflow.add_node("filter", filter_node)
     workflow.add_node("preprocess", preprocess_node)
     workflow.add_node("embed", embed_node)
     workflow.add_node("rag", rag_node)
     workflow.add_node("summarize", summarize_node)
-    
+    workflow.add_node("html", html_node)
 
     workflow.set_entry_point("scrape")
-    workflow.add_edge("scrape", "preprocess")
+    workflow.add_edge("scrape", "filter")
+    workflow.add_edge("filter", "preprocess")
     workflow.add_edge("preprocess", "summarize")
     workflow.add_edge("summarize", "embed")
     workflow.add_edge("embed", "rag")
-    workflow.add_edge("rag", END)
-   
+    workflow.add_edge("rag", "html")
+    workflow.add_edge("html", END)
+    
 
     app = workflow.compile()
     return app

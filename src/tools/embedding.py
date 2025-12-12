@@ -2,14 +2,35 @@
 
 import os
 import shutil
+import time
 from typing import Any, Dict, List
 
 from langchain_community.vectorstores import Chroma
 from langchain_community.docstore.document import Document
+from langchain_community.embeddings import HuggingFaceEmbeddings
 
 from src.configs.config import settings
 from src.database.mongo import MongoDB
-from src.tools.rag_llm import get_embeddings  # on va créer ce helper dans rag_llm.py
+
+
+def get_embeddings():
+    """Embedding model utilisé pour le vector store (local, léger)."""
+    return HuggingFaceEmbeddings(model_name=settings.EMBEDDING_MODEL_NAME)
+
+
+def _clean_chroma_store():
+    """Nettoie complètement le dossier Chroma pour éviter les corruptions."""
+    vectorstore_dir = settings.VECTORSTORE_DIR
+    if os.path.exists(vectorstore_dir):
+        try:
+            shutil.rmtree(vectorstore_dir, ignore_errors=True)
+            time.sleep(0.5)  # Attendre que le système libère les ressources
+            print(f"[EMBEDDING] Dossier Chroma nettoyé: {vectorstore_dir}")
+        except Exception as e:
+            print(f"[EMBEDDING] Attention lors du nettoyage: {e}")
+    
+    # Recréer le dossier vide
+    os.makedirs(vectorstore_dir, exist_ok=True)
 
 
 def upsert_embeddings(clean_articles: List[Dict[str, Any]]) -> None:
@@ -18,8 +39,10 @@ def upsert_embeddings(clean_articles: List[Dict[str, Any]]) -> None:
     Étapes :
     1. Effacer la collection Mongo d'articles.
     2. Insérer les articles nettoyés du jour.
-    3. Supprimer le vector store Chroma existant.
+    3. Supprimer le vector store Chroma existant (y compris fichiers de BD corrompus).
     4. Créer un nouveau vector store à partir des articles en DB.
+    
+    Gère automatiquement les corruptions Chroma avec retry automatique.
     """
     db = MongoDB()
 
@@ -31,12 +54,7 @@ def upsert_embeddings(clean_articles: List[Dict[str, Any]]) -> None:
     print(f"[EMBEDDING] Insertion de {len(clean_articles)} nouveaux articles")
     db.insert_many(settings.ARTICLES_COLLECTION, clean_articles)
 
-    # 3. Supprimer l'ancien vector store
-    print(f"[EMBEDDING] Suppression du vector store existant : {settings.VECTORSTORE_DIR}")
-    shutil.rmtree(settings.VECTORSTORE_DIR, ignore_errors=True)
-    os.makedirs(settings.VECTORSTORE_DIR, exist_ok=True)
-
-    # 4. Re-créer le vector store depuis Mongo
+    # 3. Récupérer les articles depuis Mongo
     docs: List[Dict[str, Any]] = db.find(settings.ARTICLES_COLLECTION)
 
     lc_docs: List[Document] = []
@@ -53,14 +71,49 @@ def upsert_embeddings(clean_articles: List[Dict[str, Any]]) -> None:
 
     if not lc_docs:
         print("[EMBEDDING] Aucun document à indexer, vector store vide.")
+        # Même sans documents, nettoyer Chroma
+        _clean_chroma_store()
         return
 
     embeddings = get_embeddings()
 
-    Chroma.from_documents(
-        documents=lc_docs,
-        embedding=embeddings,
-        persist_directory=settings.VECTORSTORE_DIR,
-    )
+    # Nettoyage préventif avant la création
+    print("[EMBEDDING] Nettoyage préventif du vector store")
+    _clean_chroma_store()
 
-    print(f"[EMBEDDING] Vector store reconstruit avec {len(lc_docs)} documents.")
+    # Tentative de création avec retry automatique en cas de corruption
+    max_retries = 3
+    last_error = None
+    
+    for attempt in range(1, max_retries + 1):
+        try:
+            print(f"[EMBEDDING] Tentative {attempt}/{max_retries} de création du vector store...")
+            Chroma.from_documents(
+                documents=lc_docs,
+                embedding=embeddings,
+                persist_directory=settings.VECTORSTORE_DIR,
+            )
+            print(f"[EMBEDDING] ✅ Vector store créé avec succès avec {len(lc_docs)} documents.")
+            return
+            
+        except Exception as e:
+            last_error = e
+            error_msg = str(e)
+            print(f"[EMBEDDING] ❌ Tentative {attempt}/{max_retries} échouée")
+            print(f"[EMBEDDING] Erreur: {error_msg[:150]}")
+            
+            if attempt < max_retries:
+                # Nettoyage complet et attendre avant de réessayer
+                print(f"[EMBEDDING] Nettoyage complet avant nouvelle tentative...")
+                _clean_chroma_store()
+                time.sleep(1)  # Attendre 1 seconde avant de réessayer
+            else:
+                print(f"[EMBEDDING] ⚠️ Échec après {max_retries} tentatives")
+    
+    # Si tous les retries ont échoué, afficher l'erreur
+    if last_error:
+        print(f"[EMBEDDING] ERREUR CRITIQUE: {last_error}")
+        raise RuntimeError(
+            f"Impossible de créer le vector store après {max_retries} tentatives. "
+            f"Erreur: {str(last_error)[:200]}"
+        )
