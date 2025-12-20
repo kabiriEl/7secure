@@ -80,9 +80,9 @@ CATEGORIES = {
 TOP_PRIORITY = {"zero-day", "data breach", "ransomware", "AI-attacks"}
 
 
-# ---------------------------
+
 # Matching catégorie + score
-# ---------------------------
+
 
 def analyze_article(article: Dict[str, Any]) -> Tuple[str, int, int]:
     text = (article.get("title", "") + " " + article.get("html", "")).lower()
@@ -104,9 +104,8 @@ def analyze_article(article: Dict[str, Any]) -> Tuple[str, int, int]:
     return best_category, best_score, priority
 
 
-# ---------------------------
+
 # Déduplication
-# ---------------------------
 
 def is_similar(a: str, b: str, threshold: float = 0.80) -> bool:
     return SequenceMatcher(None, a.lower(), b.lower()).ratio() >= threshold
@@ -120,9 +119,9 @@ def deduplicate(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return unique
 
 
-# ---------------------------
+
 # Sélection finale (max 10)
-# ---------------------------
+
 
 def select_top_articles(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # Regrouper par source

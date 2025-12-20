@@ -6,6 +6,8 @@
 import os
 from dataclasses import dataclass
 
+from dotenv import load_dotenv
+load_dotenv()
 
 @dataclass
 class Settings:
@@ -17,14 +19,7 @@ class Settings:
     # Hugging Face / LLM distant (API)
     # Le modèle s'exécute sur les serveurs HuggingFace, pas localement
     HF_API_TOKEN: str = os.getenv("HF_API_TOKEN", "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")
-    # Modèles disponibles sur HuggingFace Inference API
-    # Format: "model_id" ou "model_id:provider" (le provider sera ignoré)
-    # Recommandé: deepseek-ai/DeepSeek-V3.2, Qwen/Qwen2.5-7B-Instruct
-    # Alternatives: deepseek-ai/DeepSeek-V2-Chat, Qwen/Qwen2.5-1.5B-Instruct
-    HF_LLM_REPO_ID: str = os.getenv(
-        "HF_LLM_REPO_ID",
-        "deepseek-ai/DeepSeek-V3.2",  # Modèle DeepSeek via API distante
-    )
+    
   
 
     # Modèle d'embeddings local (sentence-transformers)
@@ -36,10 +31,13 @@ class Settings:
     # Répertoire de persistance du vector store (Chroma)
     VECTORSTORE_DIR: str = os.getenv("VECTORSTORE_DIR", "data/chroma_store")
 
-    # Google Gemini API Configuration
-    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-    GEMINI_API_URL: str = "https://generativelanguage.googleapis.com/v1beta/models"
+  
+    
+   
+    OLLAMA_API_KEY: str = os.getenv("OLLAMA_API_KEY")
+    OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL")
+    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL")
+
 
 
 settings = Settings()
