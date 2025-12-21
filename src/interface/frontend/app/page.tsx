@@ -1,172 +1,202 @@
-'use client';
+"use client";
 
-import { useState, useEffect } from 'react';
-import axios from 'axios';
-
-interface NewsletterData {
-  content: string;
-  html: string;
-}
+import { useEffect, useState } from "react";
+import {
+  Newsletter,
+  fetchNewsletters,
+  generateNewsletter,
+  GeneratedNewsletter,
+  checkBackendHealth,
+} from "@/lib/api";
+import NewsletterCard from "@/components/NewsletterCard";
+import FeaturedNewsletter from "@/components/FeaturedNewsletter";
+import { Loader } from "lucide-react";
 
 export default function Home() {
-  const [loading, setLoading] = useState(false);
+  const [newsletters, setNewsletters] = useState<Newsletter[]>([]);
+  const [selectedNewsletter, setSelectedNewsletter] = useState<Newsletter | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [newsletter, setNewsletter] = useState<NewsletterData | null>(null);
-  const [apiUrl] = useState('http://localhost:8000');
-  const [currentDate, setCurrentDate] = useState<string>('');
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generationError, setGenerationError] = useState<string | null>(null);
+  const [generatedNewsletter, setGeneratedNewsletter] = useState<GeneratedNewsletter | null>(null);
 
-  // Initialiser la date une seule fois côté client pour éviter les hydration errors
   useEffect(() => {
-    setCurrentDate(
-      new Date().toLocaleDateString('fr-FR', {
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-      })
-    );
+    async function loadNewsletters() {
+      try {
+        setIsLoading(true);
+        
+        // Vérifier d'abord si le backend est accessible
+        const isBackendHealthy = await checkBackendHealth();
+        if (!isBackendHealthy) {
+          setError(
+            "⚠️ Le serveur backend n'est pas accessible.\n\n" +
+            "Pour démarrer le backend :\n" +
+            "1. Ouvrez un terminal\n" +
+            "2. Exécutez : python start_backend.py\n" +
+            "3. Attendez que le serveur démarre sur http://localhost:8000\n" +
+            "4. Rafraîchissez cette page"
+          );
+          setIsLoading(false);
+          return;
+        }
+        
+        const data = await fetchNewsletters();
+        setNewsletters(data);
+        if (data.length > 0) {
+          setSelectedNewsletter(data[0]);
+        }
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : "Erreur inconnue";
+        if (errorMessage.includes("Failed to fetch") || errorMessage.includes("NetworkError")) {
+          setError(
+            "⚠️ Impossible de se connecter au serveur backend.\n\n" +
+            "Vérifications à faire :\n" +
+            "1. Le serveur FastAPI est-il démarré ? (python start_backend.py)\n" +
+            "2. Le serveur écoute-t-il sur http://localhost:8000 ?\n" +
+            "3. Y a-t-il un firewall qui bloque la connexion ?\n\n" +
+            "URL du backend attendue : http://localhost:8000"
+          );
+        } else {
+          setError(`Erreur lors du chargement des newsletters: ${errorMessage}`);
+        }
+        console.error("Error loading newsletters:", err);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    loadNewsletters();
   }, []);
 
-  const generateNewsletter = async () => {
-    setLoading(true);
-    setError(null);
-
+  const handleGenerateNewsletter = async () => {
     try {
-      const response = await axios.post(`${apiUrl}/run-daily-newsletter`);
-      // Debug: log response to browser console to inspect payload
-      // and set newsletter state as usual
-      // eslint-disable-next-line no-console
-      console.log('[FRONTEND] /run-daily-newsletter response', response.data);
-      setNewsletter(response.data);
-    } catch (err) {
-      if (axios.isAxiosError(err)) {
-        setError(
-          `Erreur: ${err.message}. Vérifiez que le serveur backend est en cours d'exécution sur ${apiUrl}`
-        );
-      } else {
-        setError('Une erreur inattendue s\'est produite');
+      setIsGenerating(true);
+      setGenerationError(null);
+      const result = await generateNewsletter();
+      setGeneratedNewsletter(result);
+      
+      // Recharger la liste des newsletters après génération
+      try {
+        const data = await fetchNewsletters();
+        setNewsletters(data);
+        if (data.length > 0) {
+          setSelectedNewsletter(data[0]);
+        }
+      } catch (err) {
+        console.error("Error reloading newsletters:", err);
       }
+    } catch (err) {
+      console.error("Generation error:", err);
+      setGenerationError("Échec de la création de la newsletter.");
     } finally {
-      setLoading(false);
+      setIsGenerating(false);
     }
   };
 
-  const downloadHTML = () => {
-    if (!newsletter?.html) return;
-
-    const element = document.createElement('a');
-    const file = new Blob([newsletter.html], { type: 'text/html' });
-    element.href = URL.createObjectURL(file);
-    element.download = `newsletter_${new Date().toISOString().split('T')[0]}.html`;
-    document.body.appendChild(element);
-    element.click();
-    document.body.removeChild(element);
-  };
+  if (error) {
+    return (
+      <div className="min-h-screen flex items-center justify-center px-4">
+        <div className="text-center max-w-2xl">
+          <h2 className="text-2xl font-bold text-dark-text mb-4">Erreur de connexion</h2>
+          <div className="bg-dark-bg-secondary border border-red-500/50 rounded-lg p-6 mb-4">
+            <pre className="text-left text-sm text-dark-text-secondary whitespace-pre-wrap font-mono">
+              {error}
+            </pre>
+          </div>
+          <button
+            onClick={() => window.location.reload()}
+            className="px-6 py-2 bg-accent-teal text-dark-bg font-semibold rounded-lg hover:bg-accent-teal-hover transition-colors"
+          >
+            Réessayer
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
-      {/* Header */}
-      <header className="border-b border-slate-700 bg-slate-900/50 backdrop-blur-sm">
-        <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-4xl font-bold text-white">
-                📰 Safari Newsletter
-              </h1>
-              <p className="mt-2 text-slate-400">
-                Veille quotidienne en cybersécurité générée par IA
-              </p>
-            </div>
-            <div className="text-right">
-              <p className="text-sm text-slate-400">Date</p>
-              <p className="text-2xl font-semibold text-white">
-                {currentDate || '...'}
-              </p>
-            </div>
+    <div className="bg-dark-bg">
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-12">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm uppercase tracking-wide text-accent-teal font-semibold">
+              Pipeline quotidien
+            </p>
+            <h2 className="text-3xl font-bold text-dark-text">
+              Générer la newsletter du jour
+            </h2>
+            <p className="text-dark-text-secondary">
+              Lance le pipeline et affiche le rendu HTML généré par le backend.
+            </p>
           </div>
-        </div>
-      </header>
-
-      {/* Main Content */}
-      <main className="mx-auto max-w-6xl px-4 py-12 sm:px-6 lg:px-8">
-        {/* Controls */}
-        <div className="mb-8 flex flex-col gap-4 sm:flex-row">
           <button
-            onClick={generateNewsletter}
-            disabled={loading}
-            className="flex-1 rounded-lg bg-gradient-to-r from-purple-600 to-purple-700 px-6 py-3 font-semibold text-white transition-all duration-200 hover:from-purple-700 hover:to-purple-800 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            onClick={handleGenerateNewsletter}
+            disabled={isGenerating}
+            className="inline-flex items-center justify-center px-5 py-3 bg-accent-teal text-dark-bg font-semibold rounded-lg hover:bg-accent-teal-hover transition-colors disabled:opacity-60"
           >
-            {loading ? (
-              <>
-                <div className="loading-spinner w-5 h-5 border-2 border-white border-t-purple-400" />
-                Génération en cours...
-              </>
-            ) : (
-              <>
-                ✨ Générer la newsletter
-              </>
-            )}
+            {isGenerating ? "Génération en cours..." : "Créer la newsletter"}
           </button>
-
-          {newsletter && (
-            <button
-              onClick={() => setNewsletter(null)}
-              className="rounded-lg border border-slate-600 px-6 py-3 font-semibold text-white transition-colors duration-200 hover:border-slate-500 hover:bg-slate-800"
-            >
-              🔄 Réinitialiser
-            </button>
-          )}
-
-          {newsletter?.html && (
-            <button
-              onClick={downloadHTML}
-              className="rounded-lg border border-green-600 px-6 py-3 font-semibold text-green-400 transition-colors duration-200 hover:border-green-500 hover:bg-green-950"
-            >
-              ⬇️ Télécharger
-            </button>
-          )}
         </div>
-
-        {/* Error Message */}
-        {error && (
-          <div className="mb-8 rounded-lg border border-red-500/50 bg-red-950/30 p-4 text-red-300">
-            <p className="font-semibold">❌ Erreur</p>
-            <p className="mt-1 text-sm">{error}</p>
+        {generationError && (
+          <div className="mt-4 rounded-lg border border-red-500/50 bg-red-500/10 p-4 text-red-100">
+            {generationError}
           </div>
         )}
-
-        {/* Newsletter Content */}
-        {newsletter ? (
-          <div className="newsletter-container p-8">
+        {generatedNewsletter && (
+          <div className="mt-8 rounded-xl border border-white/10 bg-dark-bg-secondary/60 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-2xl font-semibold text-dark-text">Newsletter générée</h3>
+              <span className="text-sm text-dark-text-secondary">
+                Contenu issu du pipeline backend
+              </span>
+            </div>
             <div
-              className="html-content prose prose-invert max-w-none"
-              dangerouslySetInnerHTML={{ __html: newsletter.html }}
+              className="prose prose-invert max-w-none"
+              dangerouslySetInnerHTML={{ __html: generatedNewsletter.html }}
             />
-            {/* Debug panel: show raw JSON for development */}
-            <details className="mt-4 p-4 bg-slate-900/50 border border-slate-700 text-sm text-slate-300">
-              <summary className="cursor-pointer font-semibold">Debug: réponse brute</summary>
-              <pre className="mt-2 whitespace-pre-wrap">{JSON.stringify(newsletter, null, 2)}</pre>
-            </details>
+          </div>
+        )}
+      </section>
+
+      {/* Featured Newsletter Section */}
+      {selectedNewsletter && !isLoading && (
+        <FeaturedNewsletter newsletter={selectedNewsletter} />
+      )}
+
+      {/* Newsletters Grid Section */}
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
+        <div className="mb-12">
+          <h2 className="text-3xl sm:text-4xl font-bold text-dark-text mb-2">
+            Toutes les actualités
+          </h2>
+          <p className="text-dark-text-secondary">
+            Explorez nos dernières analyses et rapports en cybersécurité
+          </p>
+        </div>
+
+        {isLoading ? (
+          <div className="flex justify-center items-center py-20">
+            <Loader className="animate-spin text-accent-teal" size={40} />
+          </div>
+        ) : newsletters.length === 0 ? (
+          <div className="text-center py-20">
+            <p className="text-dark-text-secondary">
+              Aucune newsletter trouvée. Veuillez vérifier la connexion au serveur API.
+            </p>
           </div>
         ) : (
-          <div className="rounded-lg border border-slate-700 bg-slate-800/50 p-12 text-center">
-            <p className="text-lg text-slate-400">
-              👉 Cliquez sur <strong>"Générer la newsletter"</strong> pour lancer le traitement.
-            </p>
-            <p className="mt-4 text-sm text-slate-500">
-              Le système va scraper les sources, analyser les articles et générer une newsletter
-              formatée avec IA.
-            </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {newsletters.map((newsletter) => (
+              <NewsletterCard
+                key={newsletter._id}
+                newsletter={newsletter}
+                isSelected={selectedNewsletter?._id === newsletter._id}
+              />
+            ))}
           </div>
         )}
-      </main>
-
-      {/* Footer */}
-      <footer className="border-t border-slate-700 bg-slate-900/50 py-8 text-center text-sm text-slate-500">
-        <p>Safari Newsletter v1.0 | Veille cybersécurité automatisée</p>
-        <p className="mt-2">
-          Dernière mise à jour: {currentDate || '...'}
-        </p>
-      </footer>
+      </section>
     </div>
   );
 }

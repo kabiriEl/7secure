@@ -1,1 +1,0 @@
-"""Frontend interface for SafariNewsletter."""

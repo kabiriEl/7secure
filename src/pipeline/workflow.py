@@ -19,7 +19,7 @@ from src.tools.preprocess import preprocess_articles
 from src.tools.embedding import upsert_embeddings
 from src.tools.rag import answer_with_rag
 # from src.tools.summarizer import summarize_articles
-# from src.tools.html_generator import generate_newsletter_html
+from src.tools.html_generator import generate_newsletter_html
 from src.tools.filtering import filter_articles
 
 
@@ -76,11 +76,11 @@ def rag_node(state: PipelineState) -> PipelineState:
     return {**state, "rag_answer": answer}
 
 
-# def html_node(state: PipelineState) -> PipelineState:
-#     rag_answer = state.get("rag_answer", "")
-#     html_output = generate_newsletter_html(rag_answer)
-#     return {**state, "newsletter_html": html_output}
 
+def html_node(state: PipelineState) -> PipelineState:
+    rag_answer = state.get("rag_answer", "")
+    html_output = generate_newsletter_html(rag_answer)
+    return {**state, "newsletter_html": html_output}
 
 # --- Construction de l'app LangGraph ----------------------------------------
 
@@ -94,7 +94,7 @@ def build_pipeline_app():
     # workflow.add_node("summarize", summarize_node)
     workflow.add_node("embed", embed_node)
     workflow.add_node("rag", rag_node)
-    # workflow.add_node("html", html_node)
+    workflow.add_node("html", html_node)
 
     workflow.set_entry_point("scrape")
     workflow.add_edge("scrape", "filter")
@@ -102,8 +102,8 @@ def build_pipeline_app():
     # workflow.add_edge("preprocess", "summarize")
     workflow.add_edge("preprocess", "embed")
     workflow.add_edge("embed", "rag")
-    workflow.add_edge("rag", END)
-    # workflow.add_edge("html", END)
+    workflow.add_edge("rag", "html")
+    workflow.add_edge("html", END)
 
     app = workflow.compile()
     return app

@@ -1,24 +1,24 @@
-import type { Metadata } from 'next';
-import './globals.css';
+import type { Metadata } from "next";
+import { Toaster } from "sonner";
+import Header from "@/components/Header";
+import Footer from "@/components/Footer";
+import "./globals.css";
 
 export const metadata: Metadata = {
-  title: 'Safari Newsletter - Veille Cybersécurité',
-  description: 'Newsletter quotidienne de cybersécurité générée par IA',
+  title: "VeilleCyber - Actualités Cybersécurité",
+  description:
+    "Restez informé des dernières actualités en cybersécurité et menaces numériques",
+  keywords: ["cybersécurité", "actualités", "sécurité informatique", "menaces"],
 };
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="fr">
-      <head>
-        <meta charSet="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-      </head>
-      <body>
-        {children}
+      <body className="bg-dark-bg text-dark-text">
+        <Header />
+        <main className="min-h-screen">{children}</main>
+        <Footer />
+        <Toaster position="bottom-right" theme="dark" />
       </body>
     </html>
   );

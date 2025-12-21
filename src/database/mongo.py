@@ -18,6 +18,12 @@ class MongoDB:
     def get_collection(self, name: str = settings.ARTICLES_COLLECTION) -> Collection:
         return self.db[name]
 
+    def insert_one(self, collection: str, document: Dict[str, Any]) -> Any:
+        coll = self.get_collection(collection)
+        if not document:
+            return None
+        return coll.insert_one(document)
+
     def insert_many(self, collection: str, documents: List[Dict[str, Any]]) -> Any:
         coll = self.get_collection(collection)
         if not documents:
