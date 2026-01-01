@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { use } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { Newsletter, fetchNewsletterById } from "@/lib/api";
@@ -10,19 +11,20 @@ import CommentSection from "@/components/CommentSection";
 import { Loader } from "lucide-react";
 
 interface NewsletterPageProps {
-  params: {
+  params: Promise<{
     id: string;
-  };
+  }>;
 }
 
 export default function NewsletterPage({ params }: NewsletterPageProps) {
+  const resolvedParams = use(params);
   const [newsletter, setNewsletter] = useState<Newsletter | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     async function loadNewsletter() {
       try {
-        const data = await fetchNewsletterById(params.id);
+        const data = await fetchNewsletterById(resolvedParams.id);
         setNewsletter(data);
       } catch (error) {
         console.error("Error loading newsletter:", error);
@@ -32,7 +34,7 @@ export default function NewsletterPage({ params }: NewsletterPageProps) {
     }
 
     loadNewsletter();
-  }, [params.id]);
+  }, [resolvedParams.id]);
 
   if (isLoading) {
     return (

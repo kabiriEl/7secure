@@ -3,42 +3,40 @@ HTML Generator Tool for SafariNewsletter (Ollama Cloud optional).
 
 Objectif:
 - Générer un HTML "VeilleCyber-like" STABLE (même thème + même forme)
-- À partir d'une newsletter texte au format Markdown simple:
-  # titre
-  #### Auteur
-  date — X min read
-  Bonjour...
-  #### A la une aujourd'hui:
-    * item
-  * * *
-  ### Titre news [optionnel: (url) ou markdown link]
-  #### Points Clés :
-    * ...
-  #### Description :
-    ...
-  #### Pourquoi c'est important :
-    ...
-  * * *
-  Footer + liste numérotée
-
+- À partir d'une newsletter texte au format Markdown simple
 - Conversion déterministe (sans LLM) => rendu constant.
 - Cache mémoire par hash.
-
-Note: le client Ollama est conservé (optionnel), mais par défaut on ne l'utilise PAS
-pour éviter des variations de style. Si tu veux un fallback LLM, active USE_OLLAMA_HTML=1.
 """
 
 import os
 import re
 import html
+import json
 import hashlib
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 
 from ollama import Client
 from src.configs.config import settings
 
 
 _html_cache: Dict[str, str] = {}
+
+
+def _try_parse_newsletter_json(text: str) -> Dict[str, Any]:
+    stripped = (text or "").strip()
+    if not stripped:
+        print("[HTML_GENERATOR] JSON parse: Empty text")
+        return {}
+    if stripped[0] not in "[{":
+        print(f"[HTML_GENERATOR] JSON parse: Text does not start with '[' or '{{', got: {stripped[:50]}")
+        return {}
+    try:
+        data = json.loads(stripped)
+        print(f"[HTML_GENERATOR] JSON parse: SUCCESS - parsed {type(data)} with {len(data) if isinstance(data, dict) else '?'} keys")
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        print(f"[HTML_GENERATOR] JSON parse: FAILED - {e}")
+        return {}
 
 
 # -------------------------
@@ -81,36 +79,68 @@ BULLET_RE = re.compile(r"^\s*\*\s+(.*)\s*$")
 NUM_RE = re.compile(r"^\s*(\d+)\.\s+(.*)\s*$")
 
 MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\)]+)\)")
-# Exemple Ghost export: "### Titre†domain" parfois; on supporte aussi "Titre — URL"
 BARE_URL_RE = re.compile(r"(https?://\S+)")
 
 
-def _escape_keep_basic(text: str) -> str:
-    # échappe tout, puis ré-injecte les liens markdown
-    s = html.escape(text, quote=True)
+_TAG_RE = re.compile(
+    r"\[\s*(title|titre|subtitle|sous[-\s]?titre|heading|header)\s*\]\s*",
+    flags=re.IGNORECASE,
+)
 
-    # Remettre les markdown links déjà dans le texte original
-    # (on refait une passe depuis l'original plutôt que depuis s).
-    return s
+
+def _clean_markdown_formatting(text: str) -> str:
+    """
+    Supprime les caractères de formatage Markdown + tags type [TITLE]
+    """
+    # Supprimer TOUTES les étoiles (**, *, etc.)
+    text = re.sub(r"\*+", "", text)
+
+    # Supprimer les underscores de formatage
+    text = re.sub(r"__+", "", text)
+    text = re.sub(r"_", "", text)
+
+    # Supprimer les tags [TITLE] / [TITRE] / etc.
+    text = _TAG_RE.sub("", text)
+
+    # Retire les marqueurs de titre en début de ligne (#, ##, ###, etc.)
+    text = re.sub(r"^\s*#+\s*", "", text)
+
+    # Retire les # restants hors URL
+    text = re.sub(r"(?!https?://[^\s]*)#", "", text)
+
+    # Supprimer les backticks
+    text = re.sub(r"`+", "", text)
+
+    return text.strip()
 
 
 def _extract_markdown_links(raw: str) -> str:
     """
     Convertit [texte](url) => <a ...>texte</a>
     et détecte aussi les URLs brutes.
+    Escape HTML seulement pour les éléments dangereux.
     """
+    # Escape minimal pour sécurité
+    safe_text = raw.replace('<', '&lt;').replace('>', '&gt;')
+    
     def repl(m: re.Match) -> str:
-        label = html.escape(m.group(1))
+        label = m.group(1).replace('<', '&lt;').replace('>', '&gt;')
         url = html.escape(m.group(2))
-        return f'<a href="{url}" target="_blank" rel="noopener noreferrer" style="color:#93c5fd;text-decoration:underline;">{label}</a>'
+        return (
+            f'<a href="{url}" target="_blank" rel="noopener noreferrer" '
+            f'style="color:#93c5fd;text-decoration:underline;">{label}</a>'
+        )
 
-    out = MD_LINK_RE.sub(repl, raw)
+    out = MD_LINK_RE.sub(repl, safe_text)
 
     # URLs brutes (si pas déjà dans un href)
     def repl_url(m: re.Match) -> str:
         url = m.group(1)
         esc = html.escape(url)
-        return f'<a href="{esc}" target="_blank" rel="noopener noreferrer" style="color:#93c5fd;text-decoration:underline;">{esc}</a>'
+        return (
+            f'<a href="{esc}" target="_blank" rel="noopener noreferrer" '
+            f'style="color:#93c5fd;text-decoration:underline;">{esc}</a>'
+        )
 
     out = BARE_URL_RE.sub(repl_url, out)
     return out
@@ -119,105 +149,133 @@ def _extract_markdown_links(raw: str) -> str:
 def _normalize_title_line(line: str) -> Tuple[str, Optional[str]]:
     """
     Essaie d'extraire (titre, url) si la ligne contient un lien.
-    Supporte:
-    - "Titre [source](url)"
-    - "Titre (url)"
-    - "Titre — url"
-    - sinon url None
     """
     raw = line.strip()
 
     # markdown link
     m = MD_LINK_RE.search(raw)
     if m:
-        # on garde raw complet, mais pour la card on veut un titre + url
-        return m.group(1).strip(), m.group(2).strip()
+        return _clean_markdown_formatting(m.group(1).strip()), m.group(2).strip()
 
     # (url)
     m = re.search(r"^(.*)\((https?://[^\)]+)\)\s*$", raw)
     if m:
-        return m.group(1).strip(), m.group(2).strip()
+        return _clean_markdown_formatting(m.group(1).strip()), m.group(2).strip()
 
     # "— url"
     m = re.search(r"^(.*)\s+—\s+(https?://\S+)\s*$", raw)
     if m:
-        return m.group(1).strip(), m.group(2).strip()
+        return _clean_markdown_formatting(m.group(1).strip()), m.group(2).strip()
 
     # URL brute dans la ligne
     m = BARE_URL_RE.search(raw)
     if m:
         url = m.group(1).strip()
         title = raw.replace(url, "").strip(" -—")
-        title = title if title else url
+        title = _clean_markdown_formatting(title) if title else url
         return title, url
 
-    return raw, None
+    return _clean_markdown_formatting(raw), None
+
+
+def _final_cleanup_html(html_text: str) -> str:
+    cleaned = re.sub(r"\*+", "", html_text)
+    return cleaned
 
 
 # -------------------------
-# HTML theme (email/web safe)
+# HTML theme
 # -------------------------
 def _wrap_template(body_html: str, page_title: str) -> str:
-    # Thème sobre proche d’une newsletter Ghost (structure stable)
-    # HTML simple sans cadre pour affichage direct dans le site
     return f"""<div style="font-family:Inter,Segoe UI,Arial,sans-serif;font-size:15px;line-height:1.7;color:#e5e7eb;max-width:100%;">
   {body_html}
 </div>"""
 
 
 def _hr() -> str:
-    return '<div style="height:1px;background:#233252;margin:16px 0;"></div>'
+    return '<div style="height:1px;background:#233252;margin:20px 0;"></div>'
 
 
 def _p(text: str) -> str:
-    t = _extract_markdown_links(html.escape(text))
-    return f'<p style="margin:0 0 10px 0;color:#e5e7eb;">{t}</p>'
+    cleaned = _clean_markdown_formatting(text)
+    t = _extract_markdown_links(cleaned)
+    return f'<p style="margin:4px 0 14px 0;color:#e5e7eb;line-height:1.6;">{t}</p>'
 
 
 def _meta_line(text: str) -> str:
-    t = _extract_markdown_links(html.escape(text))
-    return f'<div style="margin:6px 0 14px 0;font-size:13px;color:#a5b4fc;">{t}</div>'
+    cleaned = _clean_markdown_formatting(text)
+    t = _extract_markdown_links(cleaned)
+    return f'<div style="margin:6px 0 16px 0;font-size:13px;color:#a5b4fc;">{t}</div>'
 
 
 def _h2(text: str) -> str:
-    t = _extract_markdown_links(html.escape(text))
-    return f'<div style="margin:18px 0 8px 0;font-size:16px;font-weight:900;color:#ffffff;">{t}</div>'
+    # Sous-titres PLUS GRANDS + couleur différente
+    cleaned = _clean_markdown_formatting(text)
+    t = _extract_markdown_links(cleaned)
+    return (
+        '<div style="margin:26px 0 12px 0;'
+        'font-size:22px;font-weight:950;letter-spacing:0.2px;'
+        'color:#f472b6;">'
+        f'{t}</div>'
+    )
 
 
 def _h3_link(title: str, url: Optional[str]) -> str:
-    safe_title = html.escape(title)
+    clean_title = _clean_markdown_formatting(title)
+    safe_title = html.escape(clean_title)
     if url:
         safe_url = html.escape(url)
         return (
-            '<div style="margin:18px 0 10px 0;">'
+            '<div style="margin:26px 0 18px 0;">'
             f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer" '
-            'style="font-size:16px;font-weight:900;color:#ffffff;text-decoration:none;">'
-            f'{safe_title}</a>'
+            'style="font-size:20px;font-weight:900;color:#ef4444;text-decoration:none;display:block;line-height:1.3;"'
+            f'>{safe_title}</a>'
             '</div>'
         )
-    return f'<div style="margin:18px 0 10px 0;font-size:16px;font-weight:900;color:#ffffff;">{safe_title}</div>'
+    return (
+        '<div style="margin:26px 0 18px 0;font-size:20px;font-weight:900;color:#ef4444;line-height:1.3;">'
+        f'{safe_title}</div>'
+    )
 
 
 def _label(text: str) -> str:
-    # "Points Clés :", "Description :", "Pourquoi c'est important :"
-    t = html.escape(text.strip())
+    cleaned = _clean_markdown_formatting(text.strip())
+    t = html.escape(cleaned) if cleaned else ""
     return (
-        '<div style="margin:8px 0 6px 0;font-size:13px;font-weight:800;'
+        '<div style="margin:16px 0 10px 0;font-size:13px;font-weight:800;'
         'text-transform:none;color:#93c5fd;">'
         f'{t}</div>'
     )
 
 
+
+
+
+
+def _spacer(margin_px: int = 8) -> str:
+    """
+    Spacer with content to avoid being stripped by email clients; keeps subtitle separated.
+    """
+    m = max(int(margin_px), 0)
+    return f'<div style="margin:{m}px 0;line-height:0;font-size:0;">&nbsp;</div>'
+
+
+def _line_break() -> str:
+    """Explicit line break to survive aggressive sanitizers."""
+    return '<br style="line-height:1.2;" />'
+
+
 def _ul(items: List[str]) -> str:
     lis = []
     for it in items:
+        cleaned = _clean_markdown_formatting(it)
         lis.append(
             '<li style="margin:0 0 6px 0;color:#e5e7eb;">'
-            f'{_extract_markdown_links(html.escape(it))}'
+            f'{_extract_markdown_links(cleaned)}'
             '</li>'
         )
     return (
-        '<ul style="margin:0 0 12px 18px;padding:0;color:#e5e7eb;">'
+        '<ul style="margin:4px 0 14px 18px;padding:0;color:#e5e7eb;line-height:1.5;">'
         + "".join(lis) +
         '</ul>'
     )
@@ -226,9 +284,10 @@ def _ul(items: List[str]) -> str:
 def _ol(items: List[str]) -> str:
     lis = []
     for it in items:
+        cleaned = _clean_markdown_formatting(it)
         lis.append(
             '<li style="margin:0 0 6px 0;color:#e5e7eb;">'
-            f'{_extract_markdown_links(html.escape(it))}'
+            f'{_extract_markdown_links(cleaned)}'
             '</li>'
         )
     return (
@@ -238,21 +297,81 @@ def _ol(items: List[str]) -> str:
     )
 
 
-def _card(inner: str) -> str:
-    return (
-        '<div style="margin:14px 0 0 0;padding:14px 14px 10px 14px;'
-        'border:1px solid #233252;border-radius:12px;background:#0c1730;">'
-        f'{inner}</div>'
-    )
+# -------------------------
+# JSON renderer
+# -------------------------
+def render_newsletter_json(data: Dict[str, Any]) -> Tuple[str, str]:
+    page_title = _clean_markdown_formatting(str(data.get("title", "") or "7secure")) or "7secure"
+
+    body_parts: List[str] = []
+    
+    # Track intro to avoid duplication
+    intro_text = ""
+    intro = data.get("intro") or data.get("introduction")
+    if intro:
+        intro_text = str(intro).strip().lower()
+        body_parts.append(_p(str(intro)))
+
+    headlines = data.get("headlines")
+    if isinstance(headlines, list) and headlines:
+        body_parts.append(_h2("Today's headlines"))
+        # Filter out headlines that match intro to avoid duplication
+        filtered_headlines = []
+        for h in headlines:
+            h_str = str(h).strip()
+            if h_str and h_str.lower() != intro_text:
+                filtered_headlines.append(h_str)
+        if filtered_headlines:
+            body_parts.append(_ul(filtered_headlines))
+
+    stories = data.get("stories") or data.get("items") or []
+    if isinstance(stories, list):
+        print(f"[HTML_GENERATOR] Processing {len(stories)} stories")
+        for idx, story in enumerate(stories):
+            print(f"[HTML_GENERATOR] Story {idx+1}: {story.get('title', '(no title)')[:50]}")
+            if not isinstance(story, dict):
+                print(f"[HTML_GENERATOR] Story {idx+1} is not a dict, skipping")
+                continue
+            st_title = story.get("title") or ""
+            st_url = story.get("url") or story.get("source")
+            if st_title:
+                print(f"[HTML_GENERATOR] Adding story {idx+1} title with URL: {st_url}")
+                body_parts.append(_h3_link(str(st_title), str(st_url) if st_url else None))
+
+            key_points = story.get("key_points") or story.get("keypoints") or story.get("points")
+            if isinstance(key_points, list) and key_points:
+                print(f"[HTML_GENERATOR] Story {idx+1}: Adding {len(key_points)} key points")
+                body_parts.append('<br style="line-height:1.5;" />')
+                body_parts.append('<br style="line-height:1.5;" />')
+                body_parts.append(_label("Key Points:"))
+                body_parts.append(_ul([str(p) for p in key_points if str(p).strip()]))
+
+            desc = story.get("description") or story.get("summary")
+            if desc:
+                body_parts.append(_label("Description:"))
+                body_parts.append(_p(str(desc)))
+
+            wim = story.get("why_it_matters") or story.get("impact") or story.get("so_what")
+            if wim:
+                body_parts.append(_label("Why It Matters:"))
+                body_parts.append(_p(str(wim)))
+
+            if idx < len(stories) - 1:
+                body_parts.append(_hr())
+
+    closing = data.get("closing") or data.get("outro") or data.get("conclusion")
+    if closing:
+        body_parts.append(_p(str(closing)))
+
+    body_html = "".join(body_parts).strip()
+    body_html = _final_cleanup_html(body_html)
+    return page_title, body_html
 
 
 # -------------------------
-# Deterministic renderer (VeilleCyber-like)
+# Deterministic renderer
 # -------------------------
 def render_veillecyber_html(newsletter_text: str) -> Tuple[str, str]:
-    """
-    Retourne (page_title, body_html)
-    """
     lines = [ln.rstrip() for ln in (newsletter_text or "").splitlines()]
 
     page_title = "7secure"
@@ -260,158 +379,155 @@ def render_veillecyber_html(newsletter_text: str) -> Tuple[str, str]:
     date_line = None
 
     body_parts: List[str] = []
-
-    # State for lists
     pending_ul: List[str] = []
     pending_ol: List[str] = []
-
-    # Story block
     in_story = False
-    story_html: List[str] = []
+    last_plain_line: Optional[str] = None
+    last_plain_index: Optional[int] = None
+
+    # Fix duplication: track intro and title
+    seen_intro = False
+    seen_intro_text = ""
+    removed_title_line = False
 
     def flush_lists():
-        nonlocal pending_ul, pending_ol, body_parts, story_html, in_story
+        nonlocal pending_ul, pending_ol, body_parts
         if pending_ul:
-            html_ul = _ul(pending_ul)
-            if in_story:
-                story_html.append(html_ul)
-            else:
-                body_parts.append(html_ul)
+            body_parts.append(_ul(pending_ul))
             pending_ul = []
         if pending_ol:
-            html_ol = _ol(pending_ol)
-            if in_story:
-                story_html.append(html_ol)
-            else:
-                body_parts.append(html_ol)
+            body_parts.append(_ol(pending_ol))
             pending_ol = []
-
-    def flush_story():
-        nonlocal in_story, story_html, body_parts
-        if in_story:
-            flush_lists()
-            body_parts.append(_card("".join(story_html)))
-            story_html = []
-            in_story = False
 
     for ln in lines:
         if not ln.strip():
-            # on garde pas les lignes vides (mise en page via marges)
             continue
 
-        # Separator "* * *"
+        cleaned_line = _clean_markdown_formatting(ln)
+
+        # Remove duplicate intro (like "Hello, here's...")
+        if not seen_intro and cleaned_line.lower().startswith("hello"):
+            seen_intro = True
+            seen_intro_text = cleaned_line.strip().lower()
+            body_parts.append(_p(cleaned_line))
+            continue
+        if seen_intro and cleaned_line.strip().lower() == seen_intro_text:
+            continue
+
+        # Remove duplicate title line
+        if page_title and cleaned_line.lower() == page_title.lower():
+            if not removed_title_line:
+                removed_title_line = True
+                continue
+
         if SEP_RE.match(ln):
             flush_lists()
-            flush_story()
+            in_story = False
+            last_plain_line = None
+            last_plain_index = None
             body_parts.append(_hr())
             continue
 
-        # H1 "# ..."
         m = H1_RE.match(ln)
         if m:
             flush_lists()
-            flush_story()
-            page_title = m.group(1).strip()
-            # Titre en haut déjà dans template; on peut aussi le rappeler dans body comme Ghost le fait
-            body_parts.append(
-                f'<div style="font-size:22px;font-weight:900;color:#ffffff;margin:0 0 8px 0;">{html.escape(page_title)}</div>'
-            )
+            in_story = False
+            last_plain_line = None
+            last_plain_index = None
+            raw_title = m.group(1).strip()
+            page_title = _clean_markdown_formatting(raw_title)
             continue
 
-        # H4 "#### ..."
+        lower_clean = cleaned_line.lower()
+        if lower_clean in {"key points:", "description:", "why it matters:"}:
+            flush_lists()
+            in_story = True
+            if last_plain_line is not None and last_plain_index is not None:
+                title_txt, title_url = _normalize_title_line(last_plain_line)
+                body_parts[last_plain_index] = _h3_link(title_txt, title_url)
+            last_plain_line = None
+            last_plain_index = None
+            body_parts.append(_line_break())
+            body_parts.append(_label(ln.strip()))
+            continue
+
         m = H4_RE.match(ln)
         if m:
             flush_lists()
-            # Si c'est "Auteur" en début: Ghost affiche auteur + date en meta
             text = m.group(1).strip()
 
-            # Heuristique: si c'est un nom d'auteur (ex: Maxime Blanc) et pas une section
-            if text.lower() not in {
-                "a la une aujourd'hui:",
-                "à la une aujourd'hui:",
-                "points clés :",
-                "points cles :",
-                "description :",
-                "pourquoi c'est important :",
-            } and author is None and not in_story and len(text.split()) <= 4:
-                author = text
-                continue
-
-            # Dans une story, Points/Description/Pourquoi deviennent labels
             lower = text.lower()
-            if lower in {"points clés :", "points cles :", "description :", "pourquoi c'est important :"}:
-                if not in_story:
-                    # si le texte commence direct par Points clés sans titre => on n'ouvre pas de card
-                    in_story = True
-                story_html.append(_label(text))
+            if lower in {
+                "key points:", "description:", "why it matters:"
+            }:
+                in_story = True
+                if last_plain_line is not None and last_plain_index is not None:
+                    title_txt, title_url = _normalize_title_line(last_plain_line)
+                    body_parts[last_plain_index] = _h3_link(title_txt, title_url)
+                last_plain_line = None
+                last_plain_index = None
+                body_parts.append(_line_break())
+                body_parts.append(_label(text))
             else:
-                # section hors story, ex "A la une aujourd'hui:"
-                flush_story()
+                in_story = False
+                last_plain_line = None
+                last_plain_index = None
                 body_parts.append(_h2(text.replace(":", "")))
             continue
 
-        # H3 "### ..."
         m = H3_RE.match(ln)
         if m:
             flush_lists()
-            flush_story()
             in_story = True
+            last_plain_line = None
+            last_plain_index = None
             title_line = m.group(1).strip()
             title, url = _normalize_title_line(title_line)
-            story_html.append(_h3_link(title, url))
+            body_parts.append(_h3_link(title, url))
+            body_parts.append(_line_break())
+            body_parts.append(_spacer())  # Espace après le sous-titre
             continue
 
-        # Date line like "19 déc. 2025 — 4 min read"
-        if (("min read" in ln) or ("—" in ln and any(ch.isdigit() for ch in ln))) and date_line is None and not in_story:
-            date_line = ln.strip()
-            continue
+        if ("min read" in ln) or ("—" in ln and any(ch.isdigit() for ch in ln)):
+            if date_line is None and not in_story:
+                date_line = ln.strip()
+                continue
 
-        # Bullet "* ..."
         m = BULLET_RE.match(ln)
         if m:
-            flush_story() if (not in_story and pending_ol) else None
+            if pending_ol:
+                flush_lists()
             pending_ul.append(m.group(1).strip())
             continue
 
-        # Numbered "1. ..."
         m = NUM_RE.match(ln)
         if m:
             pending_ol.append(m.group(2).strip())
             continue
 
-        # Normal paragraph
         flush_lists()
 
-        # meta block (author + date) juste après le titre
         if author and date_line and not in_story:
             body_parts.append(_meta_line(f"{author} — {date_line}"))
             author, date_line = None, None
 
-        if in_story:
-            story_html.append(_p(ln))
-        else:
-            body_parts.append(_p(ln))
+        body_parts.append(_p(ln))
+        last_plain_line = ln
+        last_plain_index = len(body_parts) - 1
 
     flush_lists()
-    flush_story()
 
-    # si meta pas flush (cas rare)
     if author and date_line:
         body_parts.insert(1, _meta_line(f"{author} — {date_line}"))
 
     body_html = "".join(body_parts).strip()
+    body_html = _final_cleanup_html(body_html)
     return page_title, body_html
-
 
 # -------------------------
 # Main generator
 # -------------------------
 class HTMLGenerator:
-    """
-    Génère HTML stable VeilleCyber-like.
-    Optionnel: fallback Ollama si USE_OLLAMA_HTML=1 (non recommandé si tu veux stabilité absolue).
-    """
-
     def __init__(self, model: str = "", use_cache: bool = True):
         self.use_cache = use_cache
         self.model = model or _html_model()
@@ -422,10 +538,6 @@ class HTMLGenerator:
             self.client = _ollama_client()
 
     def _ollama_to_markdown_like(self, text: str) -> str:
-        """
-        Fallback: demande au modèle de produire un markdown simple au format attendu,
-        sans changer le texte (structure uniquement).
-        """
         if not self.client:
             return text
 
@@ -481,8 +593,14 @@ INPUT:
             if self.use_ollama:
                 src_text = self._ollama_to_markdown_like(newsletter_text)
 
-            page_title, body_html = render_veillecyber_html(src_text)
+            data = _try_parse_newsletter_json(src_text)
+            if data:
+                page_title, body_html = render_newsletter_json(data)
+            else:
+                page_title, body_html = render_veillecyber_html(src_text)
+
             final_html = _wrap_template(body_html=body_html, page_title=page_title)
+            final_html = _final_cleanup_html(final_html)
 
             if self.use_cache:
                 _html_cache[content_hash] = final_html
@@ -492,10 +610,10 @@ INPUT:
 
         except Exception as e:
             print(f"[HTML_GENERATOR] Error: {e}")
-            # fallback minimal
             fallback_title = os.getenv("NEWSLETTER_TITLE", "Veille Cyber")
             fallback_body = _p(newsletter_text)
             fallback_html = _wrap_template(fallback_body, fallback_title)
+            fallback_html = _final_cleanup_html(fallback_html)
             if self.use_cache:
                 _html_cache[content_hash] = fallback_html
             return fallback_html
@@ -503,3 +621,34 @@ INPUT:
 
 def generate_newsletter_html(newsletter_text: str) -> str:
     return HTMLGenerator(use_cache=True).generate_html(newsletter_text)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

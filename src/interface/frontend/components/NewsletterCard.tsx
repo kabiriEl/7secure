@@ -53,7 +53,7 @@ export default function NewsletterCard({ newsletter, isSelected }: NewsletterCar
 
         {/* Title */}
         <h2
-          className={`text-xl font-bold mb-2 line-clamp-2 group-hover:text-accent-teal transition-colors ${
+          className={`text-xl font-bold mb-2 line-clamp-3 group-hover:text-accent-teal transition-colors ${
             isSelected ? "text-dark-bg" : ""
           }`}
         >

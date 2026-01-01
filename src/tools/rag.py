@@ -6,7 +6,8 @@ RAG + Newsletter generator using Ollama CLOUD only (official Python client).
 - Génère une newsletter via Ollama Cloud (Client host="https://ollama.com")
 """
 
-from typing import List
+import json
+from typing import List, Dict, Any
 from ollama import Client
 
 from langchain_community.vectorstores import Chroma
@@ -43,8 +44,64 @@ def _ollama_client() -> Client:
 # =========================
 # RAG pipeline
 # =========================
-def generate_newsletter(question: str, k: int = 5) -> str:
-    context_text = ""  #  évite NameError en fallback
+def _ensure_newsletter_json(raw: str) -> Dict[str, Any]:
+    """Parse JSON and validate complete structure.
+    
+    Ensures every story has ALL required fields:
+    - title, url, category, key_points, description, why_it_matters
+    """
+    try:
+        data = json.loads(raw)
+    except Exception as e:
+        print(f"[RAG] JSON parse error: {e}")
+        return {}
+    
+    if not isinstance(data, dict):
+        print(f"[RAG] Response is not a dict: {type(data)}")
+        return {}
+    
+    # Validate and fix stories array
+    stories = data.get("stories", [])
+    if not isinstance(stories, list):
+        print(f"[RAG] 'stories' is not a list: {type(stories)}")
+        return {}
+    
+    # Required fields per story
+    REQUIRED_STORY_FIELDS = {"title", "url", "category", "key_points", "description", "why_it_matters"}
+    
+    for idx, story in enumerate(stories):
+        if not isinstance(story, dict):
+            print(f"[RAG] Story {idx} is not a dict, skipping")
+            continue
+        
+        missing_fields = REQUIRED_STORY_FIELDS - set(story.keys())
+        if missing_fields:
+            print(f"[RAG] Story {idx} missing fields: {missing_fields}")
+            # Mark as incomplete
+            story['_incomplete'] = True
+    
+    # Filter out incomplete stories
+    valid_stories = [s for s in stories if not s.get('_incomplete')]
+    
+    if not valid_stories:
+        print(f"[RAG] No valid stories in response (had {len(stories)}, valid {len(valid_stories)})")
+        return {}
+    
+    data["stories"] = valid_stories
+    print(f"[RAG] Validation complete: {len(valid_stories)} valid stories from {len(stories)} total")
+    
+    return data
+
+
+def generate_newsletter(question: str, user_prompt: str = "", k: int = 5) -> str:
+    """Generate newsletter from RAG results.
+    
+    Args:
+        question: Query for vector retrieval (legacy parameter, may be deprecated)
+        user_prompt: User message to send to the model (from API)
+        k: Number of documents to retrieve
+    """
+    context_text = ""  # évite NameError en fallback
 
     # 1) Retrieve
     vectorstore = _load_vectorstore()
@@ -76,82 +133,69 @@ def generate_newsletter(question: str, k: int = 5) -> str:
         block = f"[{i}] {header}\n{content}" if header else f"[{i}] {content}"
         context_blocks.append(block)
 
-    context_text = "\n\n".join(context_blocks) if context_blocks else "(Aucun contenu récupéré.)"
+    context_text = "\n\n".join(context_blocks) if context_blocks else "(No content retrieved.)"
 
-    # 3) Prompt final
-    prompt = f"""
-You are a senior cybersecurity analyst and the author of a DAILY CYBERSECURITY & AI
-THREAT INTELLIGENCE NEWSLETTER, in a professional format, strictly inspired by veillecyber.fr.
+    # 3) System message (schema + rules)
+    system_message = f"""You are a senior cybersecurity analyst. Produce ONLY valid JSON for a DAILY CYBERSECURITY & AI THREAT INTELLIGENCE NEWSLETTER.
 
-=====================
-ABSOLUTE RULE
-=====================
-What you produce:
-- IS NOT an editorial letter
-- IS NOT a message addressed to subscribers
-- IS NOT a single article
-- IS a structured, multi-event cybersecurity intelligence report
+RULES (hard):
+- Output must be a single JSON object, nothing else, no markdown, no prose outside JSON.
+- No greetings in the content except inside the intro field.
+- No signature, no storytelling, no personal opinions.
+- Stay factual; no fabrication. If data is missing, omit the field.
+- Use English for all content. NEVER use French or any other language.
 
-=====================
-STRICT PROHIBITIONS
-=====================
-- No greetings
-- No signature
-- No storytelling
-- No personal opinions
-- No fabrication or assumptions
+JSON SCHEMA (keys):
+{{
+    "title": "string",
+    "intro": "string",
+    "headlines": ["string", ...],
+    "stories": [
+        {{
+            "title": "string",
+            "url": "string optional",
+            "category": "string (MUST be one of: AI Security & Threats, Threat Intelligence, Malware & Ransomware, Vulnerabilities & Exploits, Cloud & SaaS Security, IAM, SOC & Automation, Data Protection & Privacy, Human Factors, Compliance & Regulation, Data Breaches)",
+            "key_points": ["string", ...],
+            "description": "string",
+            "why_it_matters": "string"
+        }}
+    ],
+    "closing": "string"
+}}
 
-=====================
-MANDATORY STRUCTURE
-=====================
+CONTENT REQUIREMENTS:
+- OBLIGATORY 6 stories minimum .
+- title: 1–2 factual lines combining 2–3 major topics, can use emojis.
+- intro: 1–2 sentences with date/greeting.
+- headlines: 4–6 concise bullets.
+- stories: 6-7 items. Each story MUST include:
+  * category: EXACTLY one of these categories: AI Security & Threats, Threat Intelligence, Malware & Ransomware, Vulnerabilities & Exploits, Cloud & SaaS Security, IAM, SOC & Automation, Data Protection & Privacy, Human Factors, Compliance & Regulation, Data Breaches
+  * key_points: 3–5 bullets
+  * description: 1 paragraph
+  * why_it_matters: 1 paragraph
+  * url: optional
+- closing: short closing line.
 
-GLOBAL TITLE :
-    - size : 1–2 factual lines 
-    - exemple : "Ministère de l'Intérieur fuite données 🇫🇷, Cisco faille 0-day , GRU cible énergie"
-    - format : combine 2–3 major topics of the day in a factual, informative style and use emojis where relevant. without saying "GLOBAL TITLE".
+Return ONLY the JSON object per schema, no trailing text."""
 
-INTRODUCTION :
-    - size : 1-2 sentences 
-    - exemple : "Hello and welcome to the edition of Friday, "mounth" th!"
-    - format :  greetings with date, without saying "INTRODUCTION".
-    
+    # 4) User message (question + context)
+    final_user_prompt = f"""{user_prompt}
 
-TODAY’S HEADLINES (maximum 4–6 bullet points)
-
-Minimum of 5 to 6 major topics.
-
-Then, for each major topic:
-[TITLE]
-Key points: 3–5 bullet points
-Description: 1 paragraph
-Why it matters: 1 paragraph
-
-Closing expression, for example (have a good day, see you tomorrow, etc.).
-
-=====================
-PROVIDED CONTEXT
-=====================
+PROVIDED CONTEXT:
 {context_text}
 
-=====================
-EXPECTED OUTPUT
-=====================
-Complete, structured, factual newsletter.
-"""
+Return ONLY the JSON object, no trailing text."""
 
-
-    # 4) Ollama Cloud call (official client)
+    # 5) Ollama Cloud call
     try:
         client = _ollama_client()
-
-        #  Pour du Cloud, utilise idéalement un modèle *-cloud* (ex: gpt-oss:120b-cloud). :contentReference[oaicite:3]{index=3}
         model = settings.OLLAMA_MODEL
 
         resp = client.chat(
             model=model,
             messages=[
-                {"role": "system", "content": "Rédige une newsletter cybersécurité factuelle, structurée, détaillée."},
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": final_user_prompt},
             ],
             stream=False,
         )
@@ -160,18 +204,32 @@ Complete, structured, factual newsletter.
         text = (text or "").strip()
 
         if not text:
-            print("[RAG] Réponse vide du modèle, fallback.")
-            return f"Newsletter — Synthèse rapide\n\n{context_text}"
+            print("[RAG] Empty response from model, fallback.")
+            return f"Newsletter Summary\n\n{context_text}"
 
-        return text
+        print(f"[RAG] Model response received ({len(text)} chars), parsing JSON...")
+        data = _ensure_newsletter_json(text)
+        if not data:
+            print(f"[RAG] Invalid JSON response, returning raw text. First 200 chars: {text[:200]}")
+            return text
+
+        stories = data.get('stories', [])
+        print(f"[RAG] ✓ JSON VALIDATED - {len(stories)} complete articles with all required fields")
+        return json.dumps(data, ensure_ascii=False)
 
     except Exception as e:
         print(f"[RAG] Ollama Cloud error: {e}")
-        return f"Newsletter — Synthèse rapide\n\n{context_text}"
+        return f"Newsletter Summary\n\n{context_text}"
 
 
-def answer_with_rag(question: str) -> str:
-    return generate_newsletter(question)
+def answer_with_rag(question: str, user_prompt: str = "") -> str:
+    """Generate newsletter answer.
+    
+    Args:
+        question: Vector store query (legacy)
+        user_prompt: User message from API
+    """
+    return generate_newsletter(question, user_prompt=user_prompt)
 
 
 

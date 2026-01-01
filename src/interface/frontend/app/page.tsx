@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Newsletter,
   fetchNewsletters,
@@ -20,6 +20,43 @@ export default function Home() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [generatedNewsletter, setGeneratedNewsletter] = useState<GeneratedNewsletter | null>(null);
+  const [activeTag, setActiveTag] = useState<string | null>(null);
+
+  // Static category badges
+  const CATEGORY_BADGES = [
+    "Data Breaches",
+    "Compliance & Regulation",
+    "Human Factors",
+    "Data Protection & Privacy",
+    "SOC & Automation",
+    "IAM",
+    "Cloud & SaaS Security",
+    "Vulnerabilities & Exploits",
+    "Malware & Ransomware",
+    "Threat Intelligence",
+    "AI Security & Threats",
+  ];
+
+  // Compute available tags from loaded newsletters
+  const availableTags = useMemo(() => {
+    const set = new Set<string>();
+    newsletters.forEach(n => (n.tags || []).forEach(t => set.add(t)));
+    return Array.from(set);
+  }, [newsletters]);
+
+  // Filter newsletters by active tag
+  const filteredNewsletters = useMemo(() => {
+    const filtered = activeTag 
+      ? newsletters.filter(n => (n.tags || []).includes(activeTag))
+      : newsletters;
+    
+    // Sort by date (most recent first)
+    return filtered.sort((a, b) => {
+      const dateA = new Date(a.date || 0).getTime();
+      const dateB = new Date(b.date || 0).getTime();
+      return dateB - dateA; // Descending order (newest first)
+    });
+  }, [newsletters, activeTag]);
 
   useEffect(() => {
     async function loadNewsletters() {
@@ -43,9 +80,8 @@ export default function Home() {
         
         const data = await fetchNewsletters();
         setNewsletters(data);
-        if (data.length > 0) {
-          setSelectedNewsletter(data[0]);
-        }
+        const first = (activeTag ? data.filter(n => (n.tags || []).includes(activeTag)) : data)[0] || null;
+        setSelectedNewsletter(first);
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : "Erreur inconnue";
         if (errorMessage.includes("Failed to fetch") || errorMessage.includes("NetworkError")) {
@@ -69,6 +105,12 @@ export default function Home() {
     loadNewsletters();
   }, []);
 
+  // Keep selection in sync when filter changes or list updates
+  useEffect(() => {
+    const first = filteredNewsletters[0] || null;
+    setSelectedNewsletter(first);
+  }, [activeTag, newsletters]);
+
   const handleGenerateNewsletter = async () => {
     try {
       setIsGenerating(true);
@@ -80,9 +122,8 @@ export default function Home() {
       try {
         const data = await fetchNewsletters();
         setNewsletters(data);
-        if (data.length > 0) {
-          setSelectedNewsletter(data[0]);
-        }
+        const first = (activeTag ? data.filter(n => (n.tags || []).includes(activeTag)) : data)[0] || null;
+        setSelectedNewsletter(first);
       } catch (err) {
         console.error("Error reloading newsletters:", err);
       }
@@ -116,8 +157,8 @@ export default function Home() {
   }
 
   return (
-    <div className="bg-dark-bg">
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-12">
+    <div className="bg-dark-bg min-h-screen w-full overflow-x-hidden">
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-12 pb-8">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-sm uppercase tracking-wide text-accent-teal font-semibold">
@@ -133,7 +174,7 @@ export default function Home() {
           <button
             onClick={handleGenerateNewsletter}
             disabled={isGenerating}
-            className="inline-flex items-center justify-center px-5 py-3 bg-accent-teal text-dark-bg font-semibold rounded-lg hover:bg-accent-teal-hover transition-colors disabled:opacity-60"
+            className="inline-flex items-center justify-center px-5 py-3 bg-accent-teal text-dark-bg font-semibold rounded-lg hover:bg-accent-teal-hover transition-colors disabled:opacity-60 whitespace-nowrap"
           >
             {isGenerating ? "Génération en cours..." : "Créer la newsletter"}
           </button>
@@ -143,20 +184,34 @@ export default function Home() {
             {generationError}
           </div>
         )}
-        {generatedNewsletter && (
-          <div className="mt-8 rounded-xl border border-white/10 bg-dark-bg-secondary/60 p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-2xl font-semibold text-dark-text">Newsletter générée</h3>
-              <span className="text-sm text-dark-text-secondary">
-                Contenu issu du pipeline backend
-              </span>
-            </div>
-            <div
-              className="prose prose-invert max-w-none"
-              dangerouslySetInnerHTML={{ __html: generatedNewsletter.html }}
-            />
+        {/* Tag filters at top */}
+        <div className="mt-6">
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => setActiveTag(null)}
+              className={`px-3 py-1 text-sm font-semibold rounded-full border ${
+                activeTag === null
+                  ? "bg-accent-teal text-dark-bg border-transparent"
+                  : "border-white/10 text-dark-text-secondary hover:border-accent-teal"
+              }`}
+            >
+              Tous
+            </button>
+            {CATEGORY_BADGES.map(tag => (
+              <button
+                key={tag}
+                onClick={() => setActiveTag(tag)}
+                className={`px-3 py-1 text-sm font-semibold rounded-full ${
+                  activeTag === tag
+                    ? "bg-accent-teal text-dark-bg"
+                    : "bg-dark-bg-secondary border border-white/10 text-dark-text hover:border-accent-teal"
+                }`}
+              >
+                {tag}
+              </button>
+            ))}
           </div>
-        )}
+        </div>
       </section>
 
       {/* Featured Newsletter Section */}
@@ -164,16 +219,26 @@ export default function Home() {
         <FeaturedNewsletter newsletter={selectedNewsletter} />
       )}
 
-      {/* Newsletters Grid Section */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
-        <div className="mb-12">
-          <h2 className="text-3xl sm:text-4xl font-bold text-dark-text mb-2">
-            Toutes les actualités
-          </h2>
-          <p className="text-dark-text-secondary">
-            Explorez nos dernières analyses et rapports en cybersécurité
-          </p>
+      {/* Newsletters Grid Section with tag filters (limit to 3) */}
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 w-full">
+        <div className="mb-12 flex items-end justify-between gap-4">
+          <div>
+            <h2 className="text-3xl sm:text-4xl font-bold text-dark-text mb-2">
+              Dernières actualités
+            </h2>
+            <p className="text-dark-text-secondary">
+              Un aperçu des trois dernières newsletters
+            </p>
+          </div>
+          <a
+            href="/historique"
+            className="inline-flex items-center justify-center px-4 py-2 border border-white/10 rounded-lg text-accent-teal hover:border-accent-teal transition-colors"
+          >
+            Voir tout l'historique
+          </a>
         </div>
+
+        {/* Tag filters moved to top (removed here) */}
 
         {isLoading ? (
           <div className="flex justify-center items-center py-20">
@@ -186,8 +251,8 @@ export default function Home() {
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {newsletters.map((newsletter) => (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 w-full">
+            {filteredNewsletters.slice(0, 3).map((newsletter) => (
               <NewsletterCard
                 key={newsletter._id}
                 newsletter={newsletter}
