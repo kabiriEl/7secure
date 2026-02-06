@@ -3,6 +3,7 @@ requests>=2.31.0
 beautifulsoup4>=4.10.0
 pymongo>=4.0.0
 
+
 # LLM & embeddings
 transformers>=4.40.0
 sentence-transformers>=2.5.0
@@ -29,6 +30,8 @@ python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
 python-multipart>=0.0.6
 
+# Scheduler for automated daily tasks
+apscheduler>=3.10.0
 
 ollama 
 pyjwt

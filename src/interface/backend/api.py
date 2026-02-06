@@ -1,14 +1,17 @@
 from datetime import datetime
 from typing import Optional
+import os
 import re
+import json
 from collections import Counter
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from apscheduler.schedulers.background import BackgroundScheduler
 
 from src.pipeline.workflow import build_pipeline_app
 from src.tools.filtering import CATEGORIES
-from src.database.mongo import MongoDB
+from src.configs.config import settings
 
 
 def _clean_markdown_text(text: str) -> str:
@@ -24,35 +27,130 @@ def _clean_markdown_text(text: str) -> str:
     return text.strip()
 
 
-app = FastAPI(title="SafariNewsletter Backend (Ghost Frontend)")
+# app = FastAPI(title="SafariNewsletter Backend (Ghost Frontend)")
 
-# CORS dev (tu peux durcir plus tard)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
-)
+# # CORS dev (tu peux durcir plus tard)
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+#     expose_headers=["*"],
+# )
+
+app = FastAPI(title="SafariNewsletter Backend")
+
+if settings.CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
+
+
+
 
 pipeline_app = build_pipeline_app()
 
 DAILY_QUESTION = (
-    "Produis la newsletter quotidienne de VEILLE cybersécurité à partir des sources collectées aujourd’hui.\n\n"
-    "INSTRUCTIONS OPÉRATIONNELLES :\n"
-    "- Identifier, prioriser et structurer les événements cybersécurité les plus importants du jour.\n"
-    "- Traiter plusieurs sujets distincts (ne pas se limiter à une seule source).\n"
-    "- Mettre en avant les vulnérabilités critiques, alertes éditeurs/agences, incidents, campagnes et tendances.\n\n"
-    "EXIGENCES CLÉS :\n"
-    "- Respecter strictement la structure de veille imposée (titre principal, à la une, articles détaillés).\n"
-    "- Ne pas produire de lettre éditoriale : aucune salutation, aucune signature, aucun appel au lecteur.\n"
-    "- Supprimer les doublons et les contenus à faible valeur ajoutée.\n\n"
-    "OBJECTIF FINAL :\n"
-    "- Permettre à un RSSI ou à un analyste SOC de comprendre en moins de 5 minutes\n"
-    "  les événements cybersécurité majeurs de la journée et leur impact concret."
+    "Produis une newsletter quotidienne PREMIUM de cybersécurité et menaces IA à partir des sources collectées.\n\n"
+    "INSTRUCTIONS CRITIQUES :\n"
+    "1. OBLIGATOIRE : Générer au MINIMUM 5 stories (articles distincts avec tous les détails).\n"
+    "2. Chaque story DOIT contenir : titre, URL, catégorie, 3-5 key_points, description complète, why_it_matters.\n"
+    "3. Prioriser : vulnérabilités zéro-day, exploits actifs, incidents majeurs, menaces IA émergentes, campagnes ciblées.\n"
+    "4. Couvrir au minimum 3 catégories distinctes parmi : Vulnerabilities, Threat Intelligence, Malware, AI Security, Data Breaches, IAM.\n\n"
+    "EXIGENCES DE QUALITÉ :\n"
+    "- Chaque article doit apporter une valeur analytique unique (pas de redondance).\n"
+    "- Inclure l'impact sur les organisations et les mesures de mitigation recommandées.\n"
+    "- Utiliser un ton professionnel et neutre, adapté aux RSSI et analystes SOC.\n"
+    "- Aucun contenu éditorial, salutation ou signature : facts only.\n\n"
+    "OBJECTIF :\n"
+    "Permettre aux décideurs IT/Sécurité de comprendre les risques critiques du jour"
+    " et leur impact concret sur l'infrastructure (scores de criticité : critique/élevé/moyen)."
 )
 
+
+# ==================== APScheduler Setup ====================
+# Protection contre double exécution en mode --reload (uvicorn)
+# La variable d'environnement RUN_MAIN n'existe que dans le process principal
+# (pas dans le reloader), donc on évite de lancer le scheduler deux fois.
+scheduler = BackgroundScheduler()
+
+
+def automated_daily_job():
+    """
+    Job automatique exécuté tous les jours à 08:00 par APScheduler.
+    Lance le pipeline complet et publie la newsletter dans Ghost.
+    """
+    print("[SCHEDULER] ========================================")
+    print(f"[SCHEDULER] Starting automated daily job at {datetime.now().isoformat()}")
+    print("[SCHEDULER] ========================================")
+    
+    try:
+        state = pipeline_app.invoke({"question": DAILY_QUESTION})
+        
+        rag_answer = state.get("rag_answer", "") or ""
+        newsletter_html = state.get("newsletter_html", "") or ""
+        ghost_post_id = state.get("ghost_post_id", "") or ""
+        ghost_post_url = state.get("ghost_post_url", "") or ""
+        
+        print(f"[SCHEDULER] Pipeline completed successfully")
+        print(f"[SCHEDULER] RAG answer length: {len(rag_answer)} chars")
+        print(f"[SCHEDULER] Newsletter HTML length: {len(newsletter_html)} chars")
+        print(f"[SCHEDULER] Ghost post ID: {ghost_post_id}")
+        print(f"[SCHEDULER] Ghost post URL: {ghost_post_url}")
+        print("[SCHEDULER] ========================================")
+        
+    except Exception as e:
+        print(f"[SCHEDULER] ERROR: Pipeline execution failed: {e}")
+        print("[SCHEDULER] ========================================")
+        # On ne lève pas l'exception pour ne pas crasher le scheduler
+        # Le job va simplement réessayer le lendemain
+
+
+@app.on_event("startup")
+def startup_event():
+    """
+    Démarrage du scheduler APScheduler au lancement de FastAPI.
+    Protection contre double exécution en mode uvicorn --reload.
+    """
+    # Protection: ne démarre le scheduler que dans le process principal
+    # En mode --reload, uvicorn crée un process parent (reloader) et un process enfant (app)
+    # On ne veut exécuter le scheduler que dans le process enfant (celui qui run l'app)
+    if os.environ.get("RUN_MAIN") == "true" or not os.environ.get("RUN_MAIN"):
+        # RUN_MAIN=true signifie qu'on est dans le process enfant (mode reload)
+        # Si RUN_MAIN n'existe pas, on est en mode normal (pas de reload)
+        # Dans les deux cas, on démarre le scheduler
+        
+        # Configurer le job quotidien à 08:00
+        scheduler.add_job(
+            automated_daily_job,
+            trigger="cron",
+            hour=8,
+            minute=0,
+            id="daily_newsletter_job",
+            replace_existing=True,
+        )
+        
+        scheduler.start()
+        print("[SCHEDULER] APScheduler started - Daily job configured for 08:00")
+        print("[SCHEDULER] Next run:", scheduler.get_jobs()[0].next_run_time if scheduler.get_jobs() else "No jobs scheduled")
+    else:
+        print("[SCHEDULER] Skipping scheduler start (reloader process)")
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    """Arrêt propre du scheduler APScheduler."""
+    if scheduler.running:
+        scheduler.shutdown()
+        print("[SCHEDULER] APScheduler stopped")
+
+
+# ==================== Endpoints ====================
 
 @app.get("/")
 def root():
@@ -77,8 +175,20 @@ def run_daily_newsletter():
         print(f"[API] Pipeline invocation failed: {e}")
         raise HTTPException(status_code=500, detail=f"Pipeline error: {e}")
 
-    rag_answer = _clean_markdown_text(state.get("rag_answer", "") or "")
+    rag_answer = state.get("rag_answer", "") or ""
     newsletter_html = state.get("newsletter_html", "") or ""
+    
+    # Parse the RAG JSON to extract title and content for API response
+    newsletter_title = ""
+    try:
+        rag_data = json.loads(rag_answer)
+        if isinstance(rag_data, dict):
+            newsletter_title = (rag_data.get("title") or "").strip()
+    except (json.JSONDecodeError, ValueError):
+        pass
+    
+    if not newsletter_title:
+        newsletter_title = "Cybersecurity Newsletter"
 
     # Derive tags (categories) from filtered articles
     try:
@@ -97,40 +207,12 @@ def run_daily_newsletter():
     except Exception:
         top_categories = []
 
-    # Save to MongoDB (optionnel mais utile pour debug/historique)
-    try:
-        db = MongoDB()
-        title = "Newsletter Cybersécurité"
-        if rag_answer:
-            lines = [line.strip() for line in rag_answer.split("\n") if line.strip()]
-            if lines:
-                first = lines[0]
-                title = first if len(first) <= 70 else (first[:157] + "...")
-
-        newsletter_doc = {
-            "title": title,
-            "excerpt": rag_answer[:200] + "..." if len(rag_answer) > 200 else rag_answer,
-            "content": rag_answer,
-            "html": newsletter_html,
-            "author": {"name": "SafariNewsletter"},
-            "date": datetime.now().isoformat(),
-            "tags": top_categories if top_categories else ["cybersécurité", "veille"],
-            # Ghost info
-            "ghost": {
-                "status": state.get("ghost_status", ""),
-                "post_id": state.get("ghost_post_id", ""),
-                "slug": state.get("ghost_post_slug", ""),
-                "url": state.get("ghost_post_url", ""),
-            },
-        }
-        result = db.insert_one("newsletters", newsletter_doc)
-        print(f"[API] Newsletter saved to MongoDB with ID: {result.inserted_id}")
-    except Exception as e:
-        print(f"[API] Warning: Could not save newsletter to MongoDB: {e}")
+    # Newsletter archivée dans Ghost (pas de stockage parallèle MongoDB)
 
     print("[API] Pipeline complete.")
 
     return {
+        "title": newsletter_title,
         "content": rag_answer,
         "html": newsletter_html,
         "ghost": {
@@ -140,6 +222,7 @@ def run_daily_newsletter():
             "url": state.get("ghost_post_url", ""),
         },
     }
+
 
 
 

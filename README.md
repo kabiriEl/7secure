@@ -1,8 +1,21 @@
 # Safari Newsletter
 
-Application de génération automatique de newsletters de veille cybersécurité.
+Application de génération automatique de newsletters de veille cybersécurité avec images.
 
 ## 🚀 Démarrage rapide
+
+### Configuration
+
+1. Copier le fichier `.env.example` vers `.env` et remplir les variables:
+```bash
+cp .env.example .env
+```
+
+2. Configurer Ghost CMS:
+   - `GHOST_URL`: L'URL de votre site Ghost
+   - `GHOST_ADMIN_API_KEY`: Clé API Admin pour publier les posts (format: `id:secret`)
+   - `GHOST_CONTENT_API_KEY`: Clé API Content pour récupérer les posts (obtenue dans Ghost Admin > Integrations)
+   - `GHOST_NEWSLETTER_SLUG`: Le slug de votre newsletter
 
 ### Backend (FastAPI)
 
@@ -19,9 +32,9 @@ python start_backend.py
 Le serveur sera accessible sur `http://localhost:8000`
 - API Documentation: http://localhost:8000/docs
 - Endpoints disponibles:
-  - `GET /api/newsletters` - Liste toutes les newsletters
-  - `GET /api/newsletters/{id}` - Récupère une newsletter par ID
-  - `POST /run-daily-newsletter` - Génère une nouvelle newsletter
+  - `GET /api/newsletters` - Liste toutes les newsletters depuis Ghost avec leurs images
+  - `GET /api/newsletters/{id}` - Récupère une newsletter par ID avec son image
+  - `POST /run-daily-newsletter` - Génère une nouvelle newsletter avec images
 
 ### Frontend (Next.js)
 

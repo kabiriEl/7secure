@@ -14,6 +14,9 @@ from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
 from src.configs.config import settings
+from src.tools.category_classifier import classify_story
+
+TARGET_STORY_COUNT = 10
 
 
 # =========================
@@ -41,6 +44,22 @@ def _ollama_client() -> Client:
     )
 
 
+def _pick_unique_docs(docs: List[Any], target: int) -> List[Any]:
+    """Keep at most one doc per URL to enforce one story per source URL."""
+    unique: List[Any] = []
+    seen_urls = set()
+    for doc in docs:
+        meta = getattr(doc, "metadata", {}) or {}
+        url = (meta.get("url") or meta.get("source") or "").strip()
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        unique.append(doc)
+        if len(unique) >= target:
+            break
+    return unique
+
+
 # =========================
 # RAG pipeline
 # =========================
@@ -66,22 +85,54 @@ def _ensure_newsletter_json(raw: str) -> Dict[str, Any]:
         print(f"[RAG] 'stories' is not a list: {type(stories)}")
         return {}
     
-    # Required fields per story
-    REQUIRED_STORY_FIELDS = {"title", "url", "category", "key_points", "description", "why_it_matters"}
+    # Required fields per story (title, description are critical)
+    # Note: 'category' is NOT required from LLM - will be assigned by classifier
+    CRITICAL_STORY_FIELDS = {"title", "description"}
     
     for idx, story in enumerate(stories):
         if not isinstance(story, dict):
             print(f"[RAG] Story {idx} is not a dict, skipping")
             continue
         
-        missing_fields = REQUIRED_STORY_FIELDS - set(story.keys())
-        if missing_fields:
-            print(f"[RAG] Story {idx} missing fields: {missing_fields}")
-            # Mark as incomplete
+        missing_critical = CRITICAL_STORY_FIELDS - set(story.keys())
+        if missing_critical:
+            print(f"[RAG] Story {idx} missing critical fields: {missing_critical}")
+            # Mark as incomplete (missing critical)
             story['_incomplete'] = True
+        else:
+            # Auto-fill empty optional fields with defaults
+            if not story.get("key_points"):
+                story["key_points"] = [story.get("description", "")[:100]]
+            if not story.get("why_it_matters"):
+                story["why_it_matters"] = "Important for cybersecurity awareness."
+            if not story.get("url"):
+                story["url"] = ""
+                story["_incomplete"] = True
+            
+            # CRITICAL: Assign category using static keyword-based classifier
+            # This ensures reliable and consistent categorization
+            story["category"] = classify_story(story, verbose=True)
     
-    # Filter out incomplete stories
+    # Filter out incomplete stories (missing critical fields)
     valid_stories = [s for s in stories if not s.get('_incomplete')]
+
+    # De-duplicate by URL to enforce one story per source URL
+    deduped: List[Dict[str, Any]] = []
+    seen_urls = set()
+    for s in valid_stories:
+        url = (s.get("url") or "").strip()
+        if url and url in seen_urls:
+            continue
+        if url:
+            seen_urls.add(url)
+        deduped.append(s)
+    valid_stories = deduped
+
+    if len(valid_stories) > TARGET_STORY_COUNT:
+        valid_stories = valid_stories[:TARGET_STORY_COUNT]
+
+    if len(valid_stories) < TARGET_STORY_COUNT:
+        print(f"[RAG] Warning: only {len(valid_stories)}/{TARGET_STORY_COUNT} valid stories after validation.")
     
     if not valid_stories:
         print(f"[RAG] No valid stories in response (had {len(stories)}, valid {len(valid_stories)})")
@@ -93,33 +144,54 @@ def _ensure_newsletter_json(raw: str) -> Dict[str, Any]:
     return data
 
 
-def generate_newsletter(question: str, user_prompt: str = "", k: int = 5) -> str:
+def generate_newsletter(question: str, user_prompt: str = "", k: int = 30) -> str:
     """Generate newsletter from RAG results.
     
     Args:
         question: Query for vector retrieval (legacy parameter, may be deprecated)
         user_prompt: User message to send to the model (from API)
-        k: Number of documents to retrieve
+        k: Number of documents to retrieve (default 30 to reach 10 unique sources)
     """
     context_text = ""  # évite NameError en fallback
 
     # 1) Retrieve
     vectorstore = _load_vectorstore()
+    query = (question or "").strip() or "latest cybersecurity news"
+    k = max(k, TARGET_STORY_COUNT * 3)
     retriever = vectorstore.as_retriever(search_kwargs={"k": k})
 
     try:
         docs: List = (
-            retriever.invoke(question)
+            retriever.invoke(query)
             if hasattr(retriever, "invoke")
-            else retriever.get_relevant_documents(question)
+            else retriever.get_relevant_documents(query)
         )
     except Exception as e:
         print(f"[RAG] Retriever error: {e}")
         docs = []
 
+    unique_docs = _pick_unique_docs(docs, TARGET_STORY_COUNT)
+    if len(unique_docs) < TARGET_STORY_COUNT and k < 80:
+        k_retry = min(max(k * 2, TARGET_STORY_COUNT * 4), 80)
+        retriever = vectorstore.as_retriever(search_kwargs={"k": k_retry})
+        try:
+            docs = (
+                retriever.invoke(query)
+                if hasattr(retriever, "invoke")
+                else retriever.get_relevant_documents(query)
+            )
+        except Exception as e:
+            print(f"[RAG] Retriever error (retry): {e}")
+            docs = []
+        unique_docs = _pick_unique_docs(docs, TARGET_STORY_COUNT)
+
+    if len(unique_docs) < TARGET_STORY_COUNT:
+        print(f"[RAG] Warning: only {len(unique_docs)}/{TARGET_STORY_COUNT} unique sources available for context.")
+
     # 2) Build context
     context_blocks = []
-    for i, doc in enumerate(docs, start=1):
+    docs_for_context = unique_docs or docs
+    for i, doc in enumerate(docs_for_context, start=1):
         content = getattr(doc, "page_content", "") or ""
         meta = getattr(doc, "metadata", {}) or {}
 
@@ -136,7 +208,7 @@ def generate_newsletter(question: str, user_prompt: str = "", k: int = 5) -> str
     context_text = "\n\n".join(context_blocks) if context_blocks else "(No content retrieved.)"
 
     # 3) System message (schema + rules)
-    system_message = f"""You are a senior cybersecurity analyst. Produce ONLY valid JSON for a DAILY CYBERSECURITY & AI THREAT INTELLIGENCE NEWSLETTER.
+    system_message = """You are a senior cybersecurity analyst. Produce ONLY valid JSON for a DAILY CYBERSECURITY & AI THREAT INTELLIGENCE NEWSLETTER.
 
 RULES (hard):
 - Output must be a single JSON object, nothing else, no markdown, no prose outside JSON.
@@ -144,6 +216,10 @@ RULES (hard):
 - No signature, no storytelling, no personal opinions.
 - Stay factual; no fabrication. If data is missing, omit the field.
 - Use English for all content. NEVER use French or any other language.
+- Global title must resum topics in 2 sentences with emoji separated.
+- Each story title must have one emoji no more.
+- Never include two or more stories from the same source URL.
+- Always keep one story per url. If multiple stories from the same URL, keep the most relevant.
 
 JSON SCHEMA (keys):
 {{
@@ -153,8 +229,7 @@ JSON SCHEMA (keys):
     "stories": [
         {{
             "title": "string",
-            "url": "string optional",
-            "category": "string (MUST be one of: AI Security & Threats, Threat Intelligence, Malware & Ransomware, Vulnerabilities & Exploits, Cloud & SaaS Security, IAM, SOC & Automation, Data Protection & Privacy, Human Factors, Compliance & Regulation, Data Breaches)",
+            "url": "obligatory string (valid URL)",
             "key_points": ["string", ...],
             "description": "string",
             "why_it_matters": "string"
@@ -163,17 +238,20 @@ JSON SCHEMA (keys):
     "closing": "string"
 }}
 
+NOTE: DO NOT include a 'category' field in stories - categories will be automatically assigned based on content analysis.
+
 CONTENT REQUIREMENTS:
-- OBLIGATORY 6 stories minimum .
-- title: 1–2 factual lines combining 2–3 major topics, can use emojis.
+OBLIGATORY (CRITICAL - FAILURE IF NOT MET):
+- stories: EXACTLY 10 items, no more, no less. Non-negotiable.
+- title: 1–2 factual lines combining 2–3 major topics, emojis obligatory.
 - intro: 1–2 sentences with date/greeting.
-- headlines: 4–6 concise bullets.
-- stories: 6-7 items. Each story MUST include:
-  * category: EXACTLY one of these categories: AI Security & Threats, Threat Intelligence, Malware & Ransomware, Vulnerabilities & Exploits, Cloud & SaaS Security, IAM, SOC & Automation, Data Protection & Privacy, Human Factors, Compliance & Regulation, Data Breaches
+- headlines: 4–6 concise bullets extracted from stories.
+- stories: 10 complete items. Each story MUST include ALL of these:
+  * title: 1 line with one numerical emoji obligatory to keep number of stories.always colored  .
   * key_points: 3–5 bullets
   * description: 1 paragraph
   * why_it_matters: 1 paragraph
-  * url: optional
+  * url: obligatory.
 - closing: short closing line.
 
 Return ONLY the JSON object per schema, no trailing text."""
@@ -230,32 +308,5 @@ def answer_with_rag(question: str, user_prompt: str = "") -> str:
         user_prompt: User message from API
     """
     return generate_newsletter(question, user_prompt=user_prompt)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 

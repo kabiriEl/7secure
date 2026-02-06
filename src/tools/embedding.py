@@ -3,7 +3,7 @@
 Implements:
 - Chunking (splitting long documents into smaller chunks for better retrieval)
 - Rich metadata attached to each chunk (source url, title, published date, doc_id, chunk_id, positions)
-- Same MongoDB flow + fallback in-memory
+- In-memory articles processing
 - Safe Chroma rebuild with full cleanup + retries
 """
 
@@ -19,7 +19,6 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from src.configs.config import settings
-from src.database.mongo import MongoDB
 
 
 # -----------------------------
@@ -56,7 +55,7 @@ def _stable_id_from_text(text: str) -> str:
 
 
 def _extract_fields(d: Any) -> Tuple[str, str, str, Optional[Any]]:
-    """Extract (content, title, url, published) from either Mongo dict or input dict."""
+    """Extract (content, title, url, published) from article dict."""
     if isinstance(d, dict):
         content = d.get("content") or d.get("page_content") or d.get("text") or ""
         title = d.get("title", "") or ""
@@ -139,7 +138,7 @@ def _build_chunked_documents(docs: List[Any]) -> Tuple[List[Document], List[str]
             "url": url,
             "published": published,
             # Helpful for debugging / filtering later
-            "source": "mongo" if isinstance(d, dict) and "_id" in d else "memory",
+            "source": "memory",
         }
 
         chunk_docs, chunk_ids = _chunk_one_document(content, base_metadata, doc_id)
@@ -153,29 +152,15 @@ def _build_chunked_documents(docs: List[Any]) -> Tuple[List[Document], List[str]
 # Main upsert/rebuild
 # -----------------------------
 def upsert_embeddings(clean_articles: List[Dict[str, Any]]) -> None:
-    """Replace old articles and rebuild the vector store with chunking + metadata.
+    """Rebuild the vector store with chunking + metadata.
 
     Pipeline:
-    1) Drop + insert new articles in Mongo
-    2) Read them back
-    3) Build chunked Documents (each chunk carries metadata)
-    4) Wipe Chroma and rebuild from scratch (retry on corruption)
+    1) Process articles from memory
+    2) Build chunked Documents (each chunk carries metadata)
+    3) Wipe Chroma and rebuild from scratch (retry on corruption)
     """
-    db = MongoDB()
-
-    # 1-3. Mongo operations with fallback
-    try:
-        print("[EMBEDDING] Purge de la collection Mongo 'articles'")
-        db.drop_collection(settings.ARTICLES_COLLECTION)
-
-        print(f"[EMBEDDING] Insertion de {len(clean_articles)} nouveaux articles")
-        db.insert_many(settings.ARTICLES_COLLECTION, clean_articles)
-
-        print("[EMBEDDING] Lecture des articles depuis Mongo")
-        docs: List[Dict[str, Any]] = db.find(settings.ARTICLES_COLLECTION)
-    except Exception as e:
-        print(f"[EMBEDDING] ⚠️ MongoDB indisponible ou erreur: {e}. Utilisation du fallback en mémoire.")
-        docs = clean_articles
+    # Articles data en mémoire pour le chunking
+    docs = clean_articles
 
     # Build chunked docs + ids
     chunked_docs, chunk_ids = _build_chunked_documents(docs)
@@ -208,7 +193,7 @@ def upsert_embeddings(clean_articles: List[Dict[str, Any]]) -> None:
 
             print(
                 f"[EMBEDDING] ✅ Vector store créé avec succès: "
-                f"{len(chunked_docs)} chunks indexés (depuis {len(docs)} articles)."
+                f"{len(chunked_docs)} chunks indexés (depuis {len(clean_articles)} articles)."
             )
             return
 

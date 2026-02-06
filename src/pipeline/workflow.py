@@ -5,7 +5,7 @@ LangGraph workflow for end-to-end daily pipeline.
 1. scrape      -> raw_articles
 2. filter      -> filtered_articles
 3. preprocess  -> clean_articles
-4. embed       -> met à jour Mongo + vector store
+4. embed       -> met à jour vector store
 5. rag         -> rag_answer (texte brut)
 6. html        -> newsletter_html (HTML)
 7. ghost       -> publie direct en Published + Email-only (pas de draft)
@@ -30,6 +30,9 @@ from src.tools.embedding import upsert_embeddings
 from src.tools.rag import answer_with_rag
 from src.tools.html_generator import generate_newsletter_html
 from src.tools.filtering import filter_articles
+from src.tools.image_extractor import extract_best_image_url
+from src.tools.ghost_media import download_image, upload_image_to_ghost
+from src.tools.collection_publisher import publish_stories_as_collection_posts
 
 
 # Tags autorisés (catégories de cybersécurité)
@@ -56,6 +59,8 @@ class PipelineState(TypedDict, total=False):
     raw_articles: List[Dict[str, Any]]
     filtered_articles: List[Dict[str, Any]]
     clean_articles: List[Dict[str, Any]]
+    # images index built from filtered articles: url -> ghost image url
+    images_index: Dict[str, str]
 
     rag_answer: str
     newsletter_html: str
@@ -122,11 +127,10 @@ def _extract_emojis(text: str) -> List[str]:
 
 def _extract_post_metadata(newsletter_text: str) -> Dict[str, Any]:
     """
-    Déduit un titre, un extrait et des tags à partir du texte brut de la newsletter.
+    Déduit un titre et un extrait à partir du texte brut de la newsletter.
     Heuristique simple :
     - titre = première ligne non vide nettoyée
     - extrait = premières phrases/paragraphes non vides hors listes/titres
-    - tags = titres de sections (###) puis bullet points
     """
     json_data: Dict[str, Any] = {}
     stripped = (newsletter_text or "").strip()
@@ -142,54 +146,14 @@ def _extract_post_metadata(newsletter_text: str) -> Dict[str, Any]:
         raw_ai_title = str(json_data.get("title") or "")
         ai_title = _clean_line_for_meta(raw_ai_title)
 
-        headlines = json_data.get("headlines") or []
+        # headlines = json_data.get("headlines") or []
+        headlines = ""
         stories = json_data.get("stories") or []
-        intro = _clean_line_for_meta(str(json_data.get("intro") or json_data.get("introduction") or ""))
+        # intro = _clean_line_for_meta(str(json_data.get("intro") or json_data.get("introduction") or ""))
 
         # On ne met pas l'intro en excerpt pour éviter l'affichage en doublon sous le titre Ghost
         excerpt = ""
 
-        tag_candidates: List[str] = []
-        if isinstance(headlines, list):
-            tag_candidates.extend([_clean_line_for_meta(str(h)) for h in headlines])
-        if isinstance(stories, list):
-            for st in stories:
-                if not isinstance(st, dict):
-                    continue
-                if st.get("title"):
-                    tag_candidates.append(_clean_line_for_meta(str(st.get("title"))))
-                kp = st.get("key_points") or []
-                if isinstance(kp, list):
-                    tag_candidates.extend([_clean_line_for_meta(str(p)) for p in kp])
-
-        tags: List[str] = []
-        seen = set()
-        for cand in tag_candidates:
-            tag = cand[:40].strip(" .,;:-")
-            key = tag.lower()
-            if not tag or key in seen:
-                continue
-            # Ne garder que les tags qui matchent les catégories autorisées
-            matched = False
-            for allowed in ALLOWED_TAGS:
-                if allowed.lower() in key or key in allowed.lower():
-                    if allowed not in tags:
-                        tags.append(allowed)
-                        seen.add(allowed.lower())
-                        matched = True
-                        break
-            if not matched:
-                # Vérifier correspondance partielle (ex: "ransomware" → "Malware & Ransomware")
-                for allowed in ALLOWED_TAGS:
-                    allowed_words = set(allowed.lower().split())
-                    cand_words = set(key.split())
-                    if allowed_words & cand_words:
-                        if allowed not in tags:
-                            tags.append(allowed)
-                            seen.add(allowed.lower())
-                            break
-            if len(tags) >= 6:
-                break
 
         # Construit un titre sophistiqué en combinant les sous-titres (headlines) et les emojis déjà présents
         headline_segments: List[str] = []
@@ -221,7 +185,7 @@ def _extract_post_metadata(newsletter_text: str) -> Dict[str, Any]:
         if len(final_title) > 200:
             final_title = final_title[:197].rsplit(" ", 1)[0]
 
-        return {"title": final_title, "excerpt": excerpt, "tags": tags}
+        return {"title": final_title, "excerpt": excerpt}
 
     # Fallback heuristique texte
     lines = [ln.strip() for ln in (newsletter_text or "").splitlines()]
@@ -249,58 +213,120 @@ def _extract_post_metadata(newsletter_text: str) -> Dict[str, Any]:
     if len(excerpt) > 280:
         excerpt = excerpt[:277].rsplit(" ", 1)[0]
 
-    tag_candidates: List[str] = []
-    for ln in lines:
-        raw = ln.strip()
-        cand = ""
-        if raw.startswith("###"):
-            cand = _clean_line_for_meta(raw[3:])
-        elif raw.startswith(("*", "-", "•")):
-            cand = _clean_line_for_meta(raw)
-        if cand:
-            tag_candidates.append(cand)
-        if len(tag_candidates) >= 12:
-            break
-
-    tags: List[str] = []
-    seen = set()
-    for cand in tag_candidates:
-        tag = cand[:40].strip(" .,;:-")
-        key = tag.lower()
-        if not tag or key in seen:
-            continue
-        # Ne garder que les tags qui matchent les catégories autorisées
-        matched = False
-        for allowed in ALLOWED_TAGS:
-            if allowed.lower() in key or key in allowed.lower():
-                if allowed not in tags:
-                    tags.append(allowed)
-                    seen.add(allowed.lower())
-                    matched = True
-                    break
-        if not matched:
-            # Vérifier correspondance partielle
-            for allowed in ALLOWED_TAGS:
-                allowed_words = set(allowed.lower().split())
-                cand_words = set(key.split())
-                if allowed_words & cand_words:
-                    if allowed not in tags:
-                        tags.append(allowed)
-                        seen.add(allowed.lower())
-                        break
-        if len(tags) >= 6:
-            break
-
     final_title = title or "Newsletter"
-    return {"title": final_title, "excerpt": excerpt, "tags": tags}
+    return {"title": final_title, "excerpt": excerpt}
+
+
+def _create_draft_post(
+    ghost_base: str,
+    token: str,
+    post_data: Dict[str, Any],
+) -> tuple[str, str]:
+    """
+    Étape 1: Créer un post en DRAFT via Ghost Admin API.
+    Retourne: (post_id, updated_at)
+    """
+    url = f"{ghost_base}/ghost/api/admin/posts/?source=html"
+    headers = {
+        "Authorization": f"Ghost {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+    draft_data = {
+        "title": post_data["title"],
+        "html": post_data["html"],
+        "status": "draft",  # ✅ Créer en DRAFT, pas en PUBLISHED
+        "email_only": post_data.get("email_only", False),
+        "tags": post_data.get("tags", []),
+    }
+    
+    # Ajouter les champs optionnels s'ils existent
+    if "custom_excerpt" in post_data and post_data["custom_excerpt"]:
+        draft_data["custom_excerpt"] = post_data["custom_excerpt"]
+    if "feature_image" in post_data and post_data["feature_image"]:
+        draft_data["feature_image"] = post_data["feature_image"]
+
+    payload = {"posts": [draft_data]}
+
+    resp = requests.post(url, json=payload, headers=headers, timeout=60)
+    if resp.status_code >= 300:
+        raise RuntimeError(
+            f"[GHOST] Draft creation failed ({resp.status_code}): {resp.text[:1000]}"
+        )
+
+    data = resp.json()
+    post = (data.get("posts") or [{}])[0]
+    post_id = str(post.get("id", ""))
+    updated_at = str(post.get("updated_at", ""))
+
+    if not post_id or not updated_at:
+        raise RuntimeError(
+            f"[GHOST] Draft creation response missing id or updated_at: {data}"
+        )
+
+    print(f"[GHOST] ✅ Created draft post id={post_id} updated_at={updated_at}")
+    return post_id, updated_at
+
+
+def _publish_post_and_send_email(
+    ghost_base: str,
+    token: str,
+    post_id: str,
+    updated_at: str,
+    email_only: bool,
+    newsletter_slug: str,
+) -> Dict[str, Any]:
+    """
+    Étape 2: Publier le post et déclencher l'envoi email via le query param ?newsletter=<slug>.
+    IMPORTANT: Ghost exige updated_at lors d'un PUT pour éviter les conflits (409).
+    Le paramètre ?newsletter=<slug> déclenche l'envoi aux abonnés.
+    """
+    url = f"{ghost_base}/ghost/api/admin/posts/{post_id}/?source=html&newsletter={newsletter_slug}"
+    headers = {
+        "Authorization": f"Ghost {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+    publish_data = {
+        "posts": [{
+            "id": post_id,
+            "updated_at": updated_at,  # ✅ OBLIGATOIRE pour eviter 409 Conflict
+            "status": "published",      # ✅ Passer de draft à published
+            "email_only": email_only,
+        }]
+    }
+
+    resp = requests.put(url, json=publish_data, headers=headers, timeout=60)
+    if resp.status_code >= 300:
+        raise RuntimeError(
+            f"[GHOST] Publish & email send failed ({resp.status_code}): {resp.text[:1000]}"
+        )
+
+    data = resp.json()
+    post = (data.get("posts") or [{}])[0]
+    
+    print(f"[GHOST] ✅ Published post id={post_id} with ?newsletter={newsletter_slug}")
+    print(f"[GHOST] ✅ Email send triggered to newsletter '{newsletter_slug}' subscribers")
+    
+    # Vérifier la réponse pour confirmation d'email
+    email_info = post.get("email", {})
+    if email_info:
+        email_status = email_info.get("status", "unknown")
+        print(f"[GHOST] Email status: {email_status}")
+    
+    return post
 
 
 def publish_post_to_ghost(state: PipelineState) -> PipelineState:
     """
-    Publie la newsletter HTML directement:
-    - status='published' (=> Published posts)
-    - email_only=True (=> Email-only posts)
-    - via URL: POST /ghost/api/admin/posts/?newsletter=<newsletter_slug>
+    Publie la newsletter via la méthode officielle Ghost en 2 étapes:
+    1) Créer le post en DRAFT
+    2) Publier avec PUT + ?newsletter=<slug> pour déclencher l'email
+    
+    ✅ Site publication: email_only=False
+    ✅ Email envoyé: via ?newsletter=<slug> dans le PUT
     """
     ghost_base = _require_env("GHOST_ADMIN_API_URL").rstrip("/")
     admin_key = _require_env("GHOST_ADMIN_API_KEY")
@@ -310,81 +336,174 @@ def publish_post_to_ghost(state: PipelineState) -> PipelineState:
     if not html.strip():
         raise RuntimeError("newsletter_html is empty: cannot publish to Ghost")
 
-    meta = _extract_post_metadata(state.get("rag_answer", ""))
+    # Parse RAG JSON answer
+    rag_answer = state.get("rag_answer", "") or ""
+    title = ""
+    excerpt = ""
+    feature_image = None
+    
+    try:
+        rag_data = json.loads(rag_answer)
+        if isinstance(rag_data, dict):
+            title = (rag_data.get("title") or "").strip()
+            excerpt = (rag_data.get("intro") or "").strip()
+            if len(excerpt) > 280:
+                excerpt = excerpt[:277].rsplit(" ", 1)[0]
+            if "stories" in rag_data and isinstance(rag_data["stories"], list):
+                for story in rag_data["stories"]:
+                    if isinstance(story, dict) and not feature_image and "image_url" in story:
+                        feature_image = story["image_url"]
+    except (json.JSONDecodeError, ValueError) as e:
+        print(f"[GHOST] Warning: Could not parse RAG JSON, using fallback: {e}")
+        meta = _extract_post_metadata(rag_answer)
+        title = meta.get("title") or ""
+        excerpt = meta.get("excerpt") or ""
+        # No tags for newsletter
+    
+    if not feature_image:
+        images_index = state.get("images_index", {}) or {}
+        if images_index:
+            feature_image = next(iter(images_index.values()), None)
+    
+    if not title:
+        title = "Cybersecurity Newsletter"
 
-    # TOUJOURS utiliser le titre généré par l'IA (pas de fallback statique)
-    title = meta.get("title") 
-    excerpt = meta.get("excerpt") 
-
-    tags_csv = os.getenv("GHOST_POST_TAGS")
-    if tags_csv:
-        tags = [{"name": t.strip()} for t in tags_csv.split(",") if t.strip()]
-    else:
-        inferred_tags = meta.get("tags") or []
-        tags = [{"name": t} for t in inferred_tags] if inferred_tags else [{"name": "VeilleCyber"}, {"name": "Newsletter"}]
-
+    excerpt = ""  # Avoid duplicate display
+    
     token = _build_ghost_admin_jwt(admin_key)
 
-    # IMPORTANT:
-    # - "source=html" aide Ghost à accepter du HTML brut.
-    # - "newsletter=<slug>" : associe à la newsletter (et permet l’email)
-    url = f"{ghost_base}/ghost/api/admin/posts/?source=html&newsletter={newsletter_slug}"
-
-    headers = {
-        "Authorization": f"Ghost {token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
+    post_data = {
+        "title": title,
+        "custom_excerpt": excerpt,
+        "html": html,
+        "email_only": False,  # ✅ Visible sur le site
     }
+    
+    if feature_image:
+        post_data["feature_image"] = feature_image
+        print(f"[GHOST] Adding feature_image: {feature_image}")
 
-    payload = {
-        "posts": [
-            {
-                "title": title,
-                "custom_excerpt": excerpt,
-                "html": html,
-                "status": "published",     # ✅ pas de draft
-                "email_only": False,        # ✅ Email-only posts
-                "tags": tags,
-            }
-        ]
-    }
+    # ÉTAPE 1: Créer en DRAFT
+    post_id, updated_at = _create_draft_post(ghost_base, token, post_data)
 
-    resp = requests.post(url, json=payload, headers=headers, timeout=60)
-    if resp.status_code >= 300:
-        raise RuntimeError(
-            f"Ghost publish failed ({resp.status_code}): {resp.text[:1000]}"
-        )
+    # ÉTAPE 2: Publier + Déclencher email via ?newsletter=<slug>
+    published_post = _publish_post_and_send_email(
+        ghost_base, token, post_id, updated_at, False, newsletter_slug
+    )
 
-    data = resp.json()
-    post = (data.get("posts") or [{}])[0]
-    state["ghost_post_id"] = str(post.get("id", ""))
-    state["ghost_post_url"] = str(post.get("url", "")) or str(post.get("canonical_url", ""))
+    state["ghost_post_id"] = post_id
+    state["ghost_post_url"] = str(published_post.get("url", "")) or str(published_post.get("canonical_url", ""))
 
     return state
+
+
+def _collection_node(state: PipelineState) -> PipelineState:
+    """Wrapper pour publish_stories_as_collection_posts."""
+    rag_answer = state.get("rag_answer", "") or ""
+    images_index = state.get("images_index", {}) or {}
+    
+    result = publish_stories_as_collection_posts(rag_answer, images_index)
+    
+    state["collection_posts_count"] = result.get("collection_posts_count", 0)
+    state["collection_posts_failed"] = result.get("collection_posts_failed", 0)
+    
+    return state
+
 
 
 def build_pipeline_app():
     graph = StateGraph(PipelineState)
 
     # Nodes
-    graph.add_node("scrape", lambda s: {"raw_articles": scrape_sources()})
+    graph.add_node("scrape", lambda s: {"raw_articles": scrape_sources(max_items_per_feed=2)})
     graph.add_node("filter", lambda s: {"filtered_articles": filter_articles(s.get("raw_articles", []))})
-    graph.add_node("preprocess", lambda s: {"clean_articles": preprocess_articles(s.get("filtered_articles", []))})
+    def _preprocess_node(state: PipelineState) -> PipelineState:
+        clean = preprocess_articles(state.get("filtered_articles", []))
+        if len(clean) < 10:
+            raise RuntimeError(
+                f"Not enough clean articles to generate 10-story newsletter (got {len(clean)})."
+            )
+        return {"clean_articles": clean}
+
+    graph.add_node("preprocess", _preprocess_node)
+    # Build image index from filtered articles (HTML available)
+    def _images_node(state: PipelineState) -> PipelineState:
+        filtered = state.get("filtered_articles", []) or []
+        images_index: Dict[str, str] = {}
+        seen_sources: set[str] = set()
+
+        for art in filtered:
+            try:
+                url = (art.get("url") or "").strip()
+                if not url:
+                    continue
+                # Deduplicate by source URL per run
+                if url in seen_sources:
+                    continue
+                seen_sources.add(url)
+
+                # Try to pick best image candidate from article metadata/html
+                candidate = extract_best_image_url(art)
+                if not candidate:
+                    continue
+
+                # Download + validation
+                dl = download_image(candidate)
+                if not dl:
+                    # Logged inside helper; skip silently here
+                    continue
+                image_bytes, filename, content_type = dl
+
+                # Upload to Ghost Admin images endpoint
+                ghost_url = upload_image_to_ghost(image_bytes, filename, content_type)
+                if ghost_url:
+                    images_index[url] = ghost_url
+            except Exception as e:
+                # Keep pipeline resilient; log and continue
+                print(f"[IMAGES] skip for article: {e}")
+
+        return {"images_index": images_index}
+
+    graph.add_node("images", _images_node)
     graph.add_node("embed", lambda s: upsert_embeddings(s.get("clean_articles", [])) or {})
     graph.add_node("rag", lambda s: {"rag_answer": answer_with_rag(s.get("question", ""))})
-    graph.add_node("html", lambda s: {"newsletter_html": generate_newsletter_html(s.get("rag_answer", ""))})
-    graph.add_node("ghost", publish_post_to_ghost)
+    # Enrich RAG JSON stories with Ghost image URLs if available
+    def _html_node(state: PipelineState) -> PipelineState:
+        raw = state.get("rag_answer", "") or ""
+        images_index = state.get("images_index", {}) or {}
+        enriched_text = raw
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                stories = data.get("stories")
+                if isinstance(stories, list):
+                    for st in stories:
+                        if not isinstance(st, dict):
+                            continue
+                        src_url = (st.get("url") or st.get("source") or "").strip()
+                        if src_url and src_url in images_index:
+                            st["image_url"] = images_index[src_url]
+                enriched_text = json.dumps(data, ensure_ascii=False)
+        except Exception as e:
+            print(f"[HTML] Could not enrich with images: {e}")
 
-    # Edges
+        return {"newsletter_html": generate_newsletter_html(enriched_text)}
+
+    graph.add_node("html", _html_node)
+    graph.add_node("ghost", publish_post_to_ghost)
+    graph.add_node("collection", _collection_node)
+
+    
     graph.set_entry_point("scrape")
     graph.add_edge("scrape", "filter")
     graph.add_edge("filter", "preprocess")
+    graph.add_edge("preprocess", "images")
     graph.add_edge("preprocess", "embed")
     graph.add_edge("embed", "rag")
     graph.add_edge("rag", "html")
     graph.add_edge("html", "ghost")
-
-    graph.add_edge("ghost", END)
+    graph.add_edge("ghost", "collection")
+    graph.add_edge("collection", END)
 
 
 

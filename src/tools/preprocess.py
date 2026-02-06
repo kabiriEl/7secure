@@ -21,11 +21,13 @@ def preprocess_articles(raw_articles: List[Dict[str, Any]]) -> List[Dict[str, An
     clean: List[Dict[str, Any]] = []
 
     for art in raw_articles:
-        html = art.get("html", "")
+        html = art.get("html") or art.get("summary_html") or ""
         if not html:
             continue
 
         content = _extract_text_from_html(html)
+        if not content and art.get("summary_html") and html != art.get("summary_html"):
+            content = _extract_text_from_html(art.get("summary_html") or "")
         if not content:
             continue
 

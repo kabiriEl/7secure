@@ -79,6 +79,11 @@ CATEGORIES = {
 
 TOP_PRIORITY = {"zero-day", "data breach", "ransomware", "AI-attacks"}
 
+# Selection targets / limits
+TARGET_COUNT = 20
+MAX_PER_DOMAIN_PRIMARY = 1
+MAX_PER_CATEGORY_PRIMARY = 3
+
 
 
 # Matching catégorie + score
@@ -113,9 +118,15 @@ def is_similar(a: str, b: str, threshold: float = 0.80) -> bool:
 
 def deduplicate(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     unique = []
+    seen_urls = set()
     for art in articles:
+        url = (art.get("url") or "").strip()
+        if url and url in seen_urls:
+            continue
         if not any(is_similar(art["title"], u["title"]) for u in unique):
             unique.append(art)
+            if url:
+                seen_urls.add(url)
     return unique
 
 
@@ -124,19 +135,23 @@ def deduplicate(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def select_top_articles(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    # Regrouper par source
+    # Regrouper par source (informative only)
     by_source = defaultdict(list)
     for art in articles:
-        domain = re.sub(r"^www\.", "", art["url"].split('/')[2])
+        url = art.get("url") or ""
+        if not url:
+            continue
+        domain = re.sub(r"^www\.", "", url.split('/')[2])
         by_source[domain].append(art)
 
     # Règles :
     # - score élevé
     # - priorité
-    # - diversité source (max 2)
+    # - diversité source (max 1)
     # - diversité catégorie (max 3)
 
     final = []
+    selected_urls = set()
     source_count = defaultdict(int)
     category_count = defaultdict(int)
 
@@ -148,19 +163,39 @@ def select_top_articles(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     )
 
     for art in articles_sorted:
-        domain = re.sub(r"^www\.", "", art["url"].split('/')[2])
+        url = (art.get("url") or "").strip()
+        if url and url in selected_urls:
+            continue
+        domain = re.sub(r"^www\.", "", art["url"].split('/')[2]) if art.get("url") else "unknown"
         cat = art["category"]
 
-        if source_count[domain] >= 2:
+        if source_count[domain] >= MAX_PER_DOMAIN_PRIMARY:
             continue
-        if category_count[cat] >= 3:
+        if category_count[cat] >= MAX_PER_CATEGORY_PRIMARY:
             continue
-        if len(final) >= 10:
+        if len(final) >= TARGET_COUNT:
             break
 
         final.append(art)
+        if url:
+            selected_urls.add(url)
         source_count[domain] += 1
         category_count[cat] += 1
+
+    # Relax limits to reach target while keeping unique URLs
+    if len(final) < TARGET_COUNT:
+        for art in articles_sorted:
+            if len(final) >= TARGET_COUNT:
+                break
+            url = (art.get("url") or "").strip()
+            if url and url in selected_urls:
+                continue
+            final.append(art)
+            if url:
+                selected_urls.add(url)
+
+    if len(final) < TARGET_COUNT:
+        print(f"[FILTER] Warning: only {len(final)}/{TARGET_COUNT} unique articles available after filtering.")
 
     return final
 
