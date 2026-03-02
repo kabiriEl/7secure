@@ -41,7 +41,7 @@ FEED_URLS: List[str] = [
 
 
 
-    #A. High-value independent research & journalism
+    # #A. High-value independent research & journalism
     "https://krebsonsecurity.com/feed/",
     "https://thehackernews.com/feeds/posts/default?alt=rss",
     "https://www.bleepingcomputer.com/rss/",
@@ -89,65 +89,65 @@ FEED_URLS: List[str] = [
     "https://www.cert.govt.nz/rss",
 
     # D. Threat-intel and feeds (IoCs)
-    "https://abuse.ch/feeds/",
-    "https://otx.alienvault.com/feeds/",
-    "https://www.team-cymru.org/Resources/",
-    "https://blog.virustotal.com/atom.xml",
-    "https://www.shadowserver.org/feed/",
-    "https://urlhaus.abuse.ch/downloads/rss/",
-    "https://rules.emergingthreats.net/rss",
-    "https://blog.malwarebytes.com/feed/",
-    "https://isc.sans.edu/rssfeed.xml",
-    "https://umbrella.cisco.com/blog/rss.xml",
-    "https://www.greynoise.io/blog/rss.xml",
+    # "https://abuse.ch/feeds/",
+    # "https://otx.alienvault.com/feeds/",
+    # "https://www.team-cymru.org/Resources/",
+    # "https://blog.virustotal.com/atom.xml",
+    # "https://www.shadowserver.org/feed/",
+    # "https://urlhaus.abuse.ch/downloads/rss/",
+    # "https://rules.emergingthreats.net/rss",
+    # "https://blog.malwarebytes.com/feed/",
+    # "https://isc.sans.edu/rssfeed.xml",
+    # "https://umbrella.cisco.com/blog/rss.xml",
+    # "https://www.greynoise.io/blog/rss.xml",
 
-    # E. Academic / standards / crypto research
-    "https://eprint.iacr.org/rss/",
-    "https://export.arxiv.org/rss/cs.CR",
-    "https://export.arxiv.org/rss/cs.CC",
-    "https://cryptomator.org/blog/feed/",
-    "https://research.google/blog/rss/",
+    # # E. Academic / standards / crypto research
+    # "https://eprint.iacr.org/rss/",
+    # "https://export.arxiv.org/rss/cs.CR",
+    # "https://export.arxiv.org/rss/cs.CC",
+    # "https://cryptomator.org/blog/feed/",
+    # "https://research.google/blog/rss/",
 
-    # F. AI security / model safety / alignment
-    "https://openai.com/blog/rss/",
-    "https://www.anthropic.com/index.rss",
-    "https://www.centerforaisafety.org/rss",
-    "https://www.alignmentforum.org/feeds.rss",
-    "https://deepmind.com/blog/rss.xml",
-    "https://huggingface.co/blog/rss.xml",
+    # # F. AI security / model safety / alignment
+    # "https://openai.com/blog/rss/",
+    # "https://www.anthropic.com/index.rss",
+    # "https://www.centerforaisafety.org/rss",
+    # "https://www.alignmentforum.org/feeds.rss",
+    # "https://deepmind.com/blog/rss.xml",
+    # "https://huggingface.co/blog/rss.xml",
 
-    # G. Cryptography & engineering blogs
-    "https://blog.cloudflare.com/tag/security/rss/",
-    "https://letsencrypt.org/feed/",
-    "https://www.eff.org/rss/",
-    "https://aws.amazon.com/blogs/security/feed/",
+    # # G. Cryptography & engineering blogs
+    # "https://blog.cloudflare.com/tag/security/rss/",
+    # "https://letsencrypt.org/feed/",
+    # "https://www.eff.org/rss/",
+    # "https://aws.amazon.com/blogs/security/feed/",
 
-    # H. Newsletters, aggregators & topic collections
-    "https://rss.feedspot.com/ai_rss_feeds/",
-    "https://rss.feedspot.com/cyber_security_rss_feeds/",
-    "https://hnrss.org/frontpage",
-    "https://www.reddit.com/r/cybersecurity/.rss",
-    "https://security.stackexchange.com/feeds",
-    "https://medium.com/feed/tag/cybersecurity",
+    # # H. Newsletters, aggregators & topic collections
+    # "https://rss.feedspot.com/ai_rss_feeds/",
+    # "https://rss.feedspot.com/cyber_security_rss_feeds/",
+    # "https://hnrss.org/frontpage",
+    # "https://www.reddit.com/r/cybersecurity/.rss",
+    # "https://security.stackexchange.com/feeds",
+    # "https://medium.com/feed/tag/cybersecurity",
 
-    # I. Regional / specialized security sources
-    "https://www.zdnet.com/topic/security/rss.xml",
-    "https://www.securityweek.com/rss.xml",
-    "https://www.csoonline.com/index.rss",
-    "https://portswigger.net/daily-swig/rss.xml",
-    "https://www.bankinfosecurity.com/rss",
+    # # I. Regional / specialized security sources
+    # "https://www.zdnet.com/topic/security/rss.xml",
+    # "https://www.securityweek.com/rss.xml",
+    # "https://www.csoonline.com/index.rss",
+    # "https://portswigger.net/daily-swig/rss.xml",
+    # "https://www.bankinfosecurity.com/rss",
 
-    # J. Podcasts, interviews & long-form
-    "https://risky.biz/feed/",
-    "https://www.recordedfuture.com/blog/rss.xml",
-    "https://www.smashingsecurity.com/rss",
-    "https://www.thecyberwire.com/rss/news.xml",
+    # # J. Podcasts, interviews & long-form
+    # "https://risky.biz/feed/",
+    # "https://www.recordedfuture.com/blog/rss.xml",
+    # "https://www.smashingsecurity.com/rss",
+    # "https://www.thecyberwire.com/rss/news.xml",
 
-    # K. Misc / GitHub curated / others
-    "https://security.stackexchange.com/feeds/tag?tagnames=cve",
-    "https://github.blog/changelog/",
-    "https://snyk.io/blog/rss.xml",
-    "https://owasp.org/feed.xml",
+    # # K. Misc / GitHub curated / others
+    # "https://security.stackexchange.com/feeds/tag?tagnames=cve",
+    # "https://github.blog/changelog/",
+    # "https://snyk.io/blog/rss.xml",
+    # "https://owasp.org/feed.xml",
 ]
 
 # Certains sites ont un flux avec contenu suffisant (on n'a pas besoin de re-télécharger la page)

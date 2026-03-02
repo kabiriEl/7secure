@@ -14,7 +14,7 @@ from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
 from src.configs.config import settings
-from src.tools.category_classifier import classify_story
+from src.tools.llm_categorizer import classify_article_with_llm
 
 TARGET_STORY_COUNT = 10
 
@@ -60,10 +60,35 @@ def _pick_unique_docs(docs: List[Any], target: int) -> List[Any]:
     return unique
 
 
+def _classify_story_with_llm(story: Dict[str, Any], client: Client, model: str) -> Dict[str, Any]:
+    """Classify one story using centralized Ollama categorizer."""
+    title = str(story.get("title") or "").strip()
+    description = str(story.get("description") or "").strip()
+    why_it_matters = str(story.get("why_it_matters") or "").strip()
+    key_points = story.get("key_points") or []
+    if not isinstance(key_points, list):
+        key_points = [str(key_points)]
+
+    content = "\n\n".join(
+        [
+            f"Description: {description}",
+            f"Why it matters: {why_it_matters}",
+            "Key points:\n" + "\n".join([f"- {str(kp).strip()}" for kp in key_points if str(kp).strip()]),
+        ]
+    )
+
+    return classify_article_with_llm(
+        title=title,
+        content=content,
+        client=client,
+        model=model,
+    )
+
+
 # =========================
 # RAG pipeline
 # =========================
-def _ensure_newsletter_json(raw: str) -> Dict[str, Any]:
+def _ensure_newsletter_json(raw: str, client: Client, model: str) -> Dict[str, Any]:
     """Parse JSON and validate complete structure.
     
     Ensures every story has ALL required fields:
@@ -109,9 +134,14 @@ def _ensure_newsletter_json(raw: str) -> Dict[str, Any]:
                 story["url"] = ""
                 story["_incomplete"] = True
             
-            # CRITICAL: Assign category using static keyword-based classifier
-            # This ensures reliable and consistent categorization
-            story["category"] = classify_story(story, verbose=True)
+            # Assign category with Ollama Cloud (one call per story)
+            llm_classification = _classify_story_with_llm(story, client=client, model=model)
+            story["category"] = llm_classification["primary_category"]
+            story["secondary_categories"] = llm_classification.get("secondary_categories", [])
+            story["subtopics"] = llm_classification.get("subtopics", [])
+            story["priority_level"] = llm_classification.get("priority", "medium")
+            story["classification_flags"] = llm_classification.get("flags", {})
+            print(f"[RAG] Story categorized by LLM: {story.get('category')}")
     
     # Filter out incomplete stories (missing critical fields)
     valid_stories = [s for s in stories if not s.get('_incomplete')]
@@ -243,7 +273,15 @@ NOTE: DO NOT include a 'category' field in stories - categories will be automati
 CONTENT REQUIREMENTS:
 OBLIGATORY (CRITICAL - FAILURE IF NOT MET):
 - stories: EXACTLY 10 items, no more, no less. Non-negotiable.
-- title: 1–2 factual lines combining 2–3 major topics, emojis obligatory.
+- title: Act as a senior cybersecurity editor and B2B marketing strategist writing for CISOs, IT Directors, and Compliance Officers.
+         Instructions :
+           - Do not summarize the articles literally
+           - Synthesize the shared strategic theme or risk signal
+           - Emphasize impact, consequence, or decision relevance
+           - Avoid words like “newsletter,” “digest,” or “roundup”
+           - Maximum 14 words
+           - Use strong executive language (risk, exposure, resilience, intelligence, control, trust)
+
 - intro: 1–2 sentences with date/greeting.
 - headlines: 4–6 concise bullets extracted from stories.
 - stories: 10 complete items. Each story MUST include ALL of these:
@@ -286,7 +324,7 @@ Return ONLY the JSON object, no trailing text."""
             return f"Newsletter Summary\n\n{context_text}"
 
         print(f"[RAG] Model response received ({len(text)} chars), parsing JSON...")
-        data = _ensure_newsletter_json(text)
+        data = _ensure_newsletter_json(text, client=client, model=model)
         if not data:
             print(f"[RAG] Invalid JSON response, returning raw text. First 200 chars: {text[:200]}")
             return text

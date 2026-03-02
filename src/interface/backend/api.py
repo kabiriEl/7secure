@@ -3,14 +3,12 @@ from typing import Optional
 import os
 import re
 import json
-from collections import Counter
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from src.pipeline.workflow import build_pipeline_app
-from src.tools.filtering import CATEGORIES
 from src.configs.config import settings
 
 
@@ -190,23 +188,6 @@ def run_daily_newsletter():
     if not newsletter_title:
         newsletter_title = "Cybersecurity Newsletter"
 
-    # Derive tags (categories) from filtered articles
-    try:
-        filtered_articles = state.get("filtered_articles", []) or []
-        cat_counter = Counter([a.get("category") for a in filtered_articles if a.get("category")])
-        top_categories = [c for c, _ in cat_counter.most_common(3)]
-
-        # ensure at least 2 tags
-        all_categories = list(CATEGORIES.keys())
-        for cat in all_categories:
-            if len(top_categories) >= 2:
-                break
-            if cat not in top_categories:
-                top_categories.append(cat)
-        top_categories = top_categories[:3]
-    except Exception:
-        top_categories = []
-
     # Newsletter archivée dans Ghost (pas de stockage parallèle MongoDB)
 
     print("[API] Pipeline complete.")
@@ -222,6 +203,8 @@ def run_daily_newsletter():
             "url": state.get("ghost_post_url", ""),
         },
     }
+
+
 
 
 

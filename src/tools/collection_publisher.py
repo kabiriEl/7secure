@@ -12,7 +12,6 @@ from typing import Any, Dict, Optional
 import jwt
 import requests
 from ollama import Client as OllamaClient
-from src.tools.category_classifier import classify_top_categories
 
 
 ALLOWED_TAGS = [
@@ -21,9 +20,10 @@ ALLOWED_TAGS = [
     "Malware & Ransomware",
     "Vulnerabilities & Exploits",
     "Cloud & SaaS Security",
-    "IAM",
+    "Identity & Access Management",
     "SOC & Automation",
     "Data Protection & Privacy",
+    "Security Culture & Human Factors",
     "Compliance & Regulation",
     "Data Breaches",
 ]
@@ -113,7 +113,7 @@ No markdown, no asterisks, no formatting."""
             
     except Exception as e:
         print(f"[COLLECTION] ⚠️  LLM failed: {e}, using original")
-        return description
+        return (title, description)
 
 
 def _build_ghost_jwt(admin_key: str) -> str:
@@ -198,17 +198,23 @@ def publish_stories_as_collection_posts(
             print(f"[COLLECTION] 🔄 Story {idx}: Reformulating...")
             new_title, content = _reformulate_with_llm(title, description, category)
             
-            # Tag valide
-            # Tags (3 catégories) via classification statique
-            tag_list = [t for t in classify_top_categories(story, top_k=3) if t in ALLOWED_TAGS]
+            # Tags from LLM classification only (primary + secondary)
+            secondary = story.get("secondary_categories", []) or []
+            if not isinstance(secondary, list):
+                secondary = []
+
+            tag_candidates = [category] + [str(s).strip() for s in secondary if str(s).strip()]
+            tag_list = []
+            for t in tag_candidates:
+                if t in ALLOWED_TAGS and t not in tag_list:
+                    tag_list.append(t)
+                if len(tag_list) >= 3:
+                    break
+
             if not tag_list:
-                tag_list = ["Threat Intelligence"]
-            if len(tag_list) < 3:
-                for allowed in ALLOWED_TAGS:
-                    if allowed not in tag_list:
-                        tag_list.append(allowed)
-                    if len(tag_list) >= 3:
-                        break
+                print(f"[COLLECTION] ⚠️  Story {idx}: Missing LLM category tags")
+                failed += 1
+                continue
             
             # Image si disponible (sera utilisée comme feature_image uniquement)
             image_url = story.get("image_url") or images_index.get(url)
@@ -246,7 +252,7 @@ def publish_stories_as_collection_posts(
             
             if resp.status_code < 300:
                 post_id = resp.json().get("posts", [{}])[0].get("id", "")
-                print(f"[COLLECTION] ✅ Story {idx}: Published (id={post_id}, tag={tag})")
+                print(f"[COLLECTION] ✅ Story {idx}: Published (id={post_id}, tags={', '.join(tag_list)})")
                 published += 1
             else:
                 print(f"[COLLECTION] ❌ Story {idx}: Failed ({resp.status_code})")

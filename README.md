@@ -26,7 +26,7 @@ pip install -r requirements.txt
 
 2. Démarrer le serveur backend :
 ```bash
-python start_backend.py
+uvicorn src.interface.backend.api:app --reload
 ```
 
 Le serveur sera accessible sur `http://localhost:8000`

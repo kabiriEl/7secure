@@ -681,6 +681,73 @@ def generate_newsletter_html(newsletter_text: str) -> str:
     return HTMLGenerator(use_cache=True).generate_html(newsletter_text)
 
 
+def _split_sentences(text: str) -> List[str]:
+    cleaned = re.sub(r"\s+", " ", (text or "").strip())
+    if not cleaned:
+        return []
+    return re.split(r"(?<=[\.!\?])\s+", cleaned)
+
+
+def build_email_summary_html(newsletter_text: str, max_sentences: int = 3) -> str:
+    """
+    Build a short HTML summary for email from existing content only.
+    Prefers JSON intro/headlines; falls back to first 2-4 sentences of raw text.
+    """
+    data = _try_parse_newsletter_json(newsletter_text)
+    parts: List[str] = []
+
+    if data:
+        intro = data.get("intro") or data.get("introduction")
+        if intro:
+            parts.append(_p(str(intro)))
+
+        headlines = data.get("headlines")
+        if isinstance(headlines, list) and headlines:
+            trimmed = [str(h) for h in headlines[:4] if str(h).strip()]
+            if trimmed:
+                parts.append(_ul(trimmed))
+
+        # If still empty, fallback to first story description
+        if not parts:
+            stories = data.get("stories") or []
+            if isinstance(stories, list) and stories:
+                first = stories[0] if isinstance(stories[0], dict) else {}
+                desc = (first.get("description") or "").strip()
+                if desc:
+                    parts.append(_p(desc))
+
+    if not parts:
+        cleaned_text = _clean_markdown_formatting(newsletter_text or "")
+        sentences = [s for s in _split_sentences(cleaned_text) if s]
+        if not sentences:
+            return _p("Daily cybersecurity briefing available.")
+
+        count = max(2, min(max_sentences, len(sentences)))
+        for s in sentences[:count]:
+            parts.append(_p(s))
+
+    return "\n".join(parts)
+
+
+def build_ghost_html_with_public_preview(summary_html: str, full_html: str) -> str:
+    """
+    Build HTML that uses Ghost's Public Preview card.
+    Everything before the card is sent by email, content after stays on site.
+    """
+    preview_begin = "<!--kg-card-begin: public-preview-->"
+    preview_end = "<!--kg-card-end: public-preview-->"
+    summary = (summary_html or "").strip()
+    full = (full_html or "").strip()
+    return "\n\n".join(
+        [
+            summary,
+            preview_begin,
+            preview_end,
+            full,
+        ]
+    ).strip()
+
+
 
 
 

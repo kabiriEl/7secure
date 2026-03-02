@@ -28,11 +28,16 @@ from src.tools.scraper import scrape_sources
 from src.tools.preprocess import preprocess_articles
 from src.tools.embedding import upsert_embeddings
 from src.tools.rag import answer_with_rag
-from src.tools.html_generator import generate_newsletter_html
+from src.tools.html_generator import (
+    generate_newsletter_html,
+    build_email_summary_html,
+    build_ghost_html_with_public_preview,
+)
 from src.tools.filtering import filter_articles
-from src.tools.image_extractor import extract_best_image_url
+from src.tools.image_extractor import extract_image_candidates
 from src.tools.ghost_media import download_image, upload_image_to_ghost
 from src.tools.collection_publisher import publish_stories_as_collection_posts
+from src.tools.regulatory_watch_publisher import publish_regulatory_watch_posts
 
 
 # Tags autorisés (catégories de cybersécurité)
@@ -75,6 +80,13 @@ def _require_env(name: str) -> str:
     if not val:
         raise RuntimeError(f"Missing required env var: {name}")
     return val
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _build_ghost_admin_jwt(admin_api_key: str) -> str:
@@ -349,10 +361,7 @@ def publish_post_to_ghost(state: PipelineState) -> PipelineState:
             excerpt = (rag_data.get("intro") or "").strip()
             if len(excerpt) > 280:
                 excerpt = excerpt[:277].rsplit(" ", 1)[0]
-            if "stories" in rag_data and isinstance(rag_data["stories"], list):
-                for story in rag_data["stories"]:
-                    if isinstance(story, dict) and not feature_image and "image_url" in story:
-                        feature_image = story["image_url"]
+            # Do not set feature_image for newsletters (avoids large header image)
     except (json.JSONDecodeError, ValueError) as e:
         print(f"[GHOST] Warning: Could not parse RAG JSON, using fallback: {e}")
         meta = _extract_post_metadata(rag_answer)
@@ -360,10 +369,7 @@ def publish_post_to_ghost(state: PipelineState) -> PipelineState:
         excerpt = meta.get("excerpt") or ""
         # No tags for newsletter
     
-    if not feature_image:
-        images_index = state.get("images_index", {}) or {}
-        if images_index:
-            feature_image = next(iter(images_index.values()), None)
+    # Do not set feature_image for newsletters (avoids large header image)
     
     if not title:
         title = "Cybersecurity Newsletter"
@@ -379,9 +385,7 @@ def publish_post_to_ghost(state: PipelineState) -> PipelineState:
         "email_only": False,  # ✅ Visible sur le site
     }
     
-    if feature_image:
-        post_data["feature_image"] = feature_image
-        print(f"[GHOST] Adding feature_image: {feature_image}")
+    # Intentionally no feature_image for newsletters
 
     # ÉTAPE 1: Créer en DRAFT
     post_id, updated_at = _create_draft_post(ghost_base, token, post_data)
@@ -410,6 +414,19 @@ def _collection_node(state: PipelineState) -> PipelineState:
     return state
 
 
+def _regulatory_watch_node(state: PipelineState) -> PipelineState:
+    """Publie les stories Compliance & Regulation vers Regulatory Watch."""
+    rag_answer = state.get("rag_answer", "") or ""
+    images_index = state.get("images_index", {}) or {}
+
+    result = publish_regulatory_watch_posts(rag_answer, images_index)
+
+    state["regwatch_posts_count"] = result.get("regwatch_posts_count", 0)
+    state["regwatch_posts_failed"] = result.get("regwatch_posts_failed", 0)
+
+    return state
+
+
 
 def build_pipeline_app():
     graph = StateGraph(PipelineState)
@@ -431,6 +448,7 @@ def build_pipeline_app():
         filtered = state.get("filtered_articles", []) or []
         images_index: Dict[str, str] = {}
         seen_sources: set[str] = set()
+        seen_images: set[str] = set()
 
         for art in filtered:
             try:
@@ -442,22 +460,27 @@ def build_pipeline_app():
                     continue
                 seen_sources.add(url)
 
-                # Try to pick best image candidate from article metadata/html
-                candidate = extract_best_image_url(art)
-                if not candidate:
+                # Try multiple image candidates and avoid duplicates
+                candidates = extract_image_candidates(art)
+                if not candidates:
                     continue
 
-                # Download + validation
-                dl = download_image(candidate)
-                if not dl:
-                    # Logged inside helper; skip silently here
-                    continue
-                image_bytes, filename, content_type = dl
+                chosen_ghost_url = None
+                for candidate in candidates:
+                    if candidate in seen_images:
+                        continue
+                    dl = download_image(candidate)
+                    if not dl:
+                        continue
+                    image_bytes, filename, content_type = dl
+                    ghost_url = upload_image_to_ghost(image_bytes, filename, content_type)
+                    if ghost_url:
+                        chosen_ghost_url = ghost_url
+                        seen_images.add(candidate)
+                        break
 
-                # Upload to Ghost Admin images endpoint
-                ghost_url = upload_image_to_ghost(image_bytes, filename, content_type)
-                if ghost_url:
-                    images_index[url] = ghost_url
+                if chosen_ghost_url:
+                    images_index[url] = chosen_ghost_url
             except Exception as e:
                 # Keep pipeline resilient; log and continue
                 print(f"[IMAGES] skip for article: {e}")
@@ -487,11 +510,30 @@ def build_pipeline_app():
         except Exception as e:
             print(f"[HTML] Could not enrich with images: {e}")
 
-        return {"newsletter_html": generate_newsletter_html(enriched_text)}
+        full_html = generate_newsletter_html(enriched_text)
+
+        # Manual test:
+        # 1) Set GHOST_EMAIL_SUMMARY_MODE=true
+        # 2) Publish a test post
+        # 3) Email should contain only summary + "Read more" link
+        # 4) Site should contain summary + full content
+        # 5) Set GHOST_EMAIL_SUMMARY_MODE=false to revert
+        summary_mode = _env_flag("GHOST_EMAIL_SUMMARY_MODE", False)
+        public_preview_enabled = _env_flag("GHOST_PUBLIC_PREVIEW_ENABLED", True)
+
+        if summary_mode and public_preview_enabled:
+            summary_html = build_email_summary_html(enriched_text)
+            final_html = build_ghost_html_with_public_preview(summary_html, full_html)
+            print("Ghost: publishing in SUMMARY EMAIL mode (public preview enabled)")
+            return {"newsletter_html": final_html}
+
+        print("Ghost: publishing in FULL EMAIL mode (legacy)")
+        return {"newsletter_html": full_html}
 
     graph.add_node("html", _html_node)
     graph.add_node("ghost", publish_post_to_ghost)
     graph.add_node("collection", _collection_node)
+    graph.add_node("regwatch", _regulatory_watch_node)
 
     
     graph.set_entry_point("scrape")
@@ -503,7 +545,8 @@ def build_pipeline_app():
     graph.add_edge("rag", "html")
     graph.add_edge("html", "ghost")
     graph.add_edge("ghost", "collection")
-    graph.add_edge("collection", END)
+    graph.add_edge("collection", "regwatch")
+    graph.add_edge("regwatch", END)
 
 
 

@@ -75,6 +75,14 @@ class Settings(BaseSettings):
         default_factory=lambda: os.getenv("GHOST_IMAGE_UPLOAD_TIMEOUT", "20")
     )
 
+    # Ghost email summary mode (Public Preview card)
+    ghost_email_summary_mode: str = Field(
+        default_factory=lambda: os.getenv("GHOST_EMAIL_SUMMARY_MODE", "false")
+    )
+    ghost_public_preview_enabled: str = Field(
+        default_factory=lambda: os.getenv("GHOST_PUBLIC_PREVIEW_ENABLED", "true")
+    )
+
     # Database configuration (MongoDB - legacy)
     mongo_uri: str = Field(
         default_factory=lambda: os.getenv("MONGO_URI", "mongodb://localhost:27017")
@@ -129,6 +137,8 @@ class SettingsProxy(Settings):
             'GHOST_POST_TAGS': 'ghost_post_tags',
             'GHOST_MAX_IMAGE_MB': 'ghost_max_image_mb',
             'GHOST_IMAGE_UPLOAD_TIMEOUT': 'ghost_image_upload_timeout',
+            'GHOST_EMAIL_SUMMARY_MODE': 'ghost_email_summary_mode',
+            'GHOST_PUBLIC_PREVIEW_ENABLED': 'ghost_public_preview_enabled',
             'MONGO_URI': 'mongo_uri',
             'MONGO_DB_NAME': 'mongo_db_name',
             'ARTICLES_COLLECTION': 'articles_collection',
