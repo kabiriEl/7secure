@@ -1,6 +1,6 @@
 # Safari Newsletter
 
-Application de génération automatique de newsletters de veille cybersécurité avec images.
+Application de génération automatique de newsletters de veille cybersécurité .
 
 ## 🚀 Démarrage rapide
 
